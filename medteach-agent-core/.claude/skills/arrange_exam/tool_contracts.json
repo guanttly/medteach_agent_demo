@@ -1,0 +1,46 @@
+{
+  "tools": [
+    {
+      "name": "get_present_students",
+      "script": "tools/get_present_students.py",
+      "desc": "查询现场参加考试的学员列表",
+      "returns": "students[]"
+    },
+    {
+      "name": "create_exam_draft",
+      "script": "tools/create_exam_draft.py",
+      "desc": "根据确认后的方案创建考试草稿",
+      "returns": "exam_id, status"
+    },
+    {
+      "name": "get_exam_preview",
+      "script": "tools/get_exam_preview.py",
+      "desc": "获取已创建考试的试卷预览",
+      "returns": "exam_preview"
+    },
+    {
+      "name": "publish_exam",
+      "script": "tools/publish_exam.py",
+      "desc": "下发考试给学员",
+      "returns": "publish_status, entry_url"
+    },
+    {
+      "name": "get_exam_progress",
+      "script": "tools/get_exam_progress.py",
+      "desc": "查询答题进度",
+      "returns": "progress"
+    },
+    {
+      "name": "get_exam_result",
+      "script": "tools/get_exam_result.py",
+      "desc": "获取阅卷结果与薄弱点",
+      "returns": "result"
+    },
+    {
+      "name": "recommend_cases",
+      "script": "tools/recommend_cases.py",
+      "desc": "根据薄弱点推荐复训病例",
+      "returns": "cases[]"
+    }
+  ]
+}

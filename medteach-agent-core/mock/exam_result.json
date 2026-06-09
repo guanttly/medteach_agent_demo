@@ -1,0 +1,39 @@
+{
+  "ok": true,
+  "fallback": true,
+  "data": {
+    "exam_id": "exam_demo_001",
+    "exam_name": "胸部 CT 基础诊断测评",
+    "summary": {
+      "average": 78.5,
+      "highest": 92,
+      "lowest": 64,
+      "pass_rate": 87.5,
+      "submitted": 8,
+      "total": 8
+    },
+    "score_distribution": [
+      { "range": "90-100", "count": 2 },
+      { "range": "80-89", "count": 3 },
+      { "range": "70-79", "count": 1 },
+      { "range": "60-69", "count": 2 },
+      { "range": "<60", "count": 0 }
+    ],
+    "students": [
+      { "id": "stu_01", "name": "张伟", "score": 92, "level": "优秀" },
+      { "id": "stu_02", "name": "李静", "score": 88, "level": "良好" },
+      { "id": "stu_03", "name": "王磊", "score": 84, "level": "良好" },
+      { "id": "stu_04", "name": "刘洋", "score": 81, "level": "良好" },
+      { "id": "stu_05", "name": "陈晨", "score": 76, "level": "中等" },
+      { "id": "stu_06", "name": "赵敏", "score": 69, "level": "待提升" },
+      { "id": "stu_07", "name": "孙浩", "score": 64, "level": "待提升" },
+      { "id": "stu_08", "name": "周琳", "score": 74, "level": "中等" }
+    ],
+    "weak_points": [
+      { "name": "肺结节良恶性征象判断", "error_rate": 0.46, "comment": "对分叶、毛刺、胸膜凹陷等征象的综合判读需加强" },
+      { "name": "磨玻璃影鉴别", "error_rate": 0.39, "comment": "纯磨玻璃与混合磨玻璃结节的鉴别仍有混淆" },
+      { "name": "结构化报告表达", "error_rate": 0.33, "comment": "报告要素不完整，描述规范性有待提升" }
+    ]
+  },
+  "error": null
+}

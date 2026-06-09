@@ -1,0 +1,16 @@
+{
+  "ok": true,
+  "fallback": true,
+  "data": {
+    "next_goal": "下一阶段建议安排「肺结节专题训练」，强化恶性征象判读与结构化报告表达。",
+    "cases": [
+      { "id": "case_01", "title": "右上肺磨玻璃结节鉴别病例", "focus": "磨玻璃影鉴别", "difficulty": "中级", "tags": ["GGO", "随访策略"], "est_minutes": 12 },
+      { "id": "case_02", "title": "实性肺结节良恶性判断病例", "focus": "结节良恶性判断", "difficulty": "中级", "tags": ["分叶征", "毛刺征"], "est_minutes": 15 },
+      { "id": "case_03", "title": "胸部 CT 报告结构化表达训练病例", "focus": "结构化报告表达", "difficulty": "初级", "tags": ["报告规范", "模板"], "est_minutes": 10 },
+      { "id": "case_04", "title": "亚实性结节动态随访对比病例", "focus": "随访评估", "difficulty": "高级", "tags": ["随访", "体积倍增"], "est_minutes": 18 },
+      { "id": "case_05", "title": "肺结节胸膜凹陷征识别病例", "focus": "恶性征象识别", "difficulty": "中级", "tags": ["胸膜凹陷征"], "est_minutes": 12 },
+      { "id": "case_06", "title": "良性钙化结节典型表现病例", "focus": "良性征象识别", "difficulty": "初级", "tags": ["钙化", "良性"], "est_minutes": 8 }
+    ]
+  },
+  "error": null
+}

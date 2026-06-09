@@ -1,0 +1,9 @@
+{
+  "plan_proposed": "好，我先按现场规培学员来准备：{duration_minutes} 分钟、{question_total} 道题、总分 {total_score} 分，重点放在{topic}。题型配成单选 {single_choice} 道、多选 {multiple_choice} 道、病例分析 {case_analysis} 道；您看按这个方案往下走可以吗？",
+  "plan_confirmed": "收到，我开始拉取今天在场的学员名单，同时去题库里配题。稍等一下，我把试卷草稿和预览一起给您看。",
+  "preview_ready": "试卷已经生成好了，一共 {question_total} 道题。您先看一下预览；没问题的话，说一声“下发考试”，我就推给学员。",
+  "exam_published": "考试已经发到 {student_count} 名学员端了，入口也打开了。接下来我盯着答题进度，有人交卷我会提示您。",
+  "all_submitted": "哦，刚刚这一轮答题已经收齐了，我先调阅自动阅卷结果。马上看平均分、通过率和主要薄弱点。",
+  "report_ready": "成绩出来了：平均分 {average} 分，及格率 {pass_rate}%；目前最高分是 {top_student} 的 {top_score} 分。薄弱点主要集中在{weak_point_1}、{weak_point_2}和{weak_point_3}，后面复训可以围绕这几块加练。",
+  "recommendation_ready": "基于这次错题，我给后续复训配了 {case_count} 个肺结节相关典型病例。本轮从出题、下发到成绩分析的闭环已经跑完。"
+}

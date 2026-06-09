@@ -1,0 +1,12 @@
+{
+  "slots": {
+    "topic": { "type": "string", "required": true, "default": "胸部 CT 基础诊断" },
+    "student_group": { "type": "string", "required": true, "default": "现场规培学员" },
+    "student_count": { "type": "integer", "required": false, "default": 8 },
+    "duration_minutes": { "type": "integer", "required": true, "default": 15 },
+    "difficulty": { "type": "enum", "values": ["初级", "中级", "高级"], "default": "中级" },
+    "single_choice": { "type": "integer", "default": 10 },
+    "multiple_choice": { "type": "integer", "default": 5 },
+    "case_analysis": { "type": "integer", "default": 2 }
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "ok": true,
+  "fallback": true,
+  "data": {
+    "exam_id": "exam_demo_001",
+    "steps": [
+      { "label": "考试已下发", "published": 8, "entered": 0, "answering": 0, "submitted": 0, "remaining_seconds": 900 },
+      { "label": "学员陆续进入", "published": 8, "entered": 8, "answering": 8, "submitted": 0, "remaining_seconds": 720 },
+      { "label": "答题进行中", "published": 8, "entered": 8, "answering": 5, "submitted": 3, "remaining_seconds": 480 },
+      { "label": "陆续交卷", "published": 8, "entered": 8, "answering": 3, "submitted": 5, "remaining_seconds": 300 },
+      { "label": "全部提交", "published": 8, "entered": 8, "answering": 0, "submitted": 8, "remaining_seconds": 0 }
+    ]
+  },
+  "error": null
+}

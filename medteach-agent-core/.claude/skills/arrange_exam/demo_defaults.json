@@ -1,0 +1,16 @@
+{
+  "exam_name": "胸部 CT 基础诊断测评",
+  "topic": "胸部 CT 基础诊断",
+  "student_group": "现场规培学员",
+  "student_count": 8,
+  "duration_minutes": 15,
+  "difficulty": "中级",
+  "total_score": 100,
+  "question_structure": {
+    "single_choice": 10,
+    "multiple_choice": 5,
+    "case_analysis": 2
+  },
+  "grading": "客观题自动阅卷，病例分析题智能辅助点评",
+  "recommended_case_count": 6
+}

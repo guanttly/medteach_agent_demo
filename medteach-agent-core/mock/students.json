@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "fallback": true,
+  "data": {
+    "group_name": "现场规培学员",
+    "total": 8,
+    "students": [
+      { "id": "stu_01", "name": "张伟", "department": "放射科", "grade": "规培一年级", "color": "#4FD1C5" },
+      { "id": "stu_02", "name": "李静", "department": "放射科", "grade": "规培一年级", "color": "#63B3ED" },
+      { "id": "stu_03", "name": "王磊", "department": "呼吸内科", "grade": "规培二年级", "color": "#B794F4" },
+      { "id": "stu_04", "name": "刘洋", "department": "放射科", "grade": "规培一年级", "color": "#F6AD55" },
+      { "id": "stu_05", "name": "陈晨", "department": "胸外科", "grade": "规培二年级", "color": "#FC8181" },
+      { "id": "stu_06", "name": "赵敏", "department": "放射科", "grade": "规培一年级", "color": "#68D391" },
+      { "id": "stu_07", "name": "孙浩", "department": "呼吸内科", "grade": "规培一年级", "color": "#76E4F7" },
+      { "id": "stu_08", "name": "周琳", "department": "放射科", "grade": "规培二年级", "color": "#F687B3" }
+    ]
+  },
+  "error": null
+}

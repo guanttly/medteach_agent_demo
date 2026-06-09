@@ -1,0 +1,62 @@
+{
+  "ok": true,
+  "fallback": true,
+  "data": {
+    "exam_id": "exam_demo_001",
+    "exam_name": "胸部 CT 基础诊断测评",
+    "topic": "胸部 CT 基础诊断",
+    "duration_minutes": 15,
+    "difficulty": "中级",
+    "total_score": 100,
+    "question_structure": {
+      "single_choice": 10,
+      "multiple_choice": 5,
+      "case_analysis": 2
+    },
+    "grading": "客观题自动阅卷，病例分析题智能辅助点评",
+    "sample_questions": [
+      {
+        "no": 1,
+        "type": "single_choice",
+        "type_label": "单选题",
+        "score": 5,
+        "stem": "胸部 CT 肺窗下，下列哪一项最符合典型磨玻璃影（GGO）的表现？",
+        "options": [
+          "A. 密度增高且完全遮盖肺纹理",
+          "B. 密度轻度增高但仍可见肺纹理与血管走行",
+          "C. 边界清晰的高密度钙化灶",
+          "D. 含气的薄壁囊腔"
+        ],
+        "answer": "B"
+      },
+      {
+        "no": 11,
+        "type": "multiple_choice",
+        "type_label": "多选题",
+        "score": 6,
+        "stem": "提示肺结节倾向恶性的 CT 征象包括以下哪些？",
+        "options": [
+          "A. 分叶征",
+          "B. 毛刺征",
+          "C. 胸膜凹陷征",
+          "D. 爆米花样钙化"
+        ],
+        "answer": "ABC"
+      },
+      {
+        "no": 16,
+        "type": "case_analysis",
+        "type_label": "病例分析题",
+        "score": 12,
+        "stem": "患者男，58 岁，吸烟史 30 年，胸部 CT 示右肺上叶 18mm 混合磨玻璃结节，伴分叶及胸膜牵拉。请从教学角度描述该结节的影像描述要点与结构化报告表达思路。",
+        "scoring_points": [
+          "准确描述结节位置、大小、密度类型（mGGO）",
+          "识别分叶征、胸膜牵拉等关键征象",
+          "给出规范的结构化报告表达框架",
+          "提出合理的随访或进一步检查教学建议"
+        ]
+      }
+    ]
+  },
+  "error": null
+}
