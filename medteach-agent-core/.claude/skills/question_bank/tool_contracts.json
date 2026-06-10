@@ -1,0 +1,11 @@
+{
+  "tools": [
+    {
+      "name": "list_questions",
+      "script": "tools/list_questions.py",
+      "desc": "查询题库题目列表（题型、器官、难度、创建者等）",
+      "args": ["page?", "size?"],
+      "returns": "{ total, questions[] }"
+    }
+  ]
+}

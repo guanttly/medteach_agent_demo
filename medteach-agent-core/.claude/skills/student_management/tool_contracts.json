@@ -1,0 +1,18 @@
+{
+  "tools": [
+    {
+      "name": "get_present_students",
+      "script": "tools/get_present_students.py",
+      "desc": "查询现场在科参加考试的学员名册",
+      "args": [],
+      "returns": "{ group_name, total, students[] }"
+    },
+    {
+      "name": "search_students",
+      "script": "tools/search_students.py",
+      "desc": "按关键字检索学员名册",
+      "args": ["keyword", "page?", "size?", "scope?(in|out)"],
+      "returns": "{ group_name, total, students[] }"
+    }
+  ]
+}

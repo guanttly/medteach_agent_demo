@@ -9,6 +9,7 @@ import ExamPlanCard from '../components/ExamPlanCard.vue'
 import ExamProgressPanel from '../components/ExamProgressPanel.vue'
 import ExamResultPanel from '../components/ExamResultPanel.vue'
 import CaseRecommendPanel from '../components/CaseRecommendPanel.vue'
+import BusinessDataPanel from '../components/BusinessDataPanel.vue'
 import EventTicker from '../components/EventTicker.vue'
 import AppIcon from '../components/AppIcon.vue'
 
@@ -24,12 +25,13 @@ const {
   progress,
   result,
   recommendation,
+  businessData,
   events
 } = storeToRefs(store)
 
 const stageRef = ref<HTMLElement | null>(null)
 watch(
-  () => [examPreview.value, progress.value, result.value, recommendation.value],
+  () => [examPreview.value, progress.value, result.value, recommendation.value, businessData.value],
   () => {
     nextTick(() => {
       stageRef.value?.scrollTo({ top: stageRef.value.scrollHeight, behavior: 'smooth' })
@@ -37,6 +39,9 @@ watch(
   },
   { deep: true }
 )
+
+// 仅这些业务模块用通用面板渲染（学员/成绩/病例已有专属面板）。
+const BUSINESS_PANEL_MODULES = ['data_board', 'list_exams', 'list_questions', 'list_teaching']
 
 const TYPE_LABEL: Record<string, string> = {
   single_choice: '单选',
@@ -132,6 +137,14 @@ const TYPE_LABEL: Record<string, string> = {
 
           <transition name="v">
             <CaseRecommendPanel v-if="recommendation" :recommendation="recommendation" class="span-2" />
+          </transition>
+
+          <transition name="v">
+            <BusinessDataPanel
+              v-if="businessData && BUSINESS_PANEL_MODULES.includes(businessData.module)"
+              :business="businessData"
+              class="span-2"
+            />
           </transition>
         </div>
       </main>

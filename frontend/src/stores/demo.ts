@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { api, wsUrl, SESSION_ID } from '../api/client'
 import type {
+  BusinessData,
   ExamPlan,
   ExamResult,
   Progress,
@@ -43,6 +44,7 @@ interface DemoState {
   progress: Progress | null
   result: ExamResult | null
   recommendation: Recommendation | null
+  businessData: BusinessData | null
   needConfirm: boolean
   confirmationType: string | null
   coreStatus: string
@@ -85,6 +87,7 @@ export const useDemoStore = defineStore('demo', {
     progress: null,
     result: null,
     recommendation: null,
+    businessData: null,
     needConfirm: false,
     confirmationType: null,
     coreStatus: 'idle',
@@ -335,6 +338,9 @@ export const useDemoStore = defineStore('demo', {
         case 'case_recommendation_update':
           this.recommendation = d.recommendation
           break
+        case 'business_data_update':
+          this.businessData = d as BusinessData
+          break
         case 'screen_event':
           this.pushEvent(d.type, d.title, d.message, d.status, !!d.fallback)
           break
@@ -343,6 +349,7 @@ export const useDemoStore = defineStore('demo', {
           this.liveTranscript = ''
           this.events = []
           this.ttsOutbox = []
+          this.businessData = null
           this._generation = 0
           this._curUttId = ''
           this._streamSpeechId = ''

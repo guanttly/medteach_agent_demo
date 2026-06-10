@@ -26,8 +26,14 @@ const entries = [
     title: '现场控制台',
     sub: '操控与兑底',
     desc: '推进流程、一键跳转、随时掌控演示节奏',
-    accent: 'c'
-  }
+    accent: 'c'  },
+  {
+    to: '/tools',
+    icon: 'wrench',
+    title: '工具箱验证',
+    sub: '真实接口测试',
+    desc: '查看已接入的平台工具 · 一键点测真实教学平台 Agent',
+    accent: 'd'  }
 ]
 </script>
 
@@ -80,8 +86,8 @@ const entries = [
   position: relative;
   z-index: 1;
   display: grid;
-  grid-template-columns: repeat(3, 280px);
-  gap: 22px;
+  grid-template-columns: repeat(4, 250px);
+  gap: 18px;
 }
 .entry {
   padding: 28px 26px;
@@ -110,6 +116,7 @@ const entries = [
 .ac-a:hover { border-color: rgba(56, 189, 248, 0.5); }
 .ac-b:hover { border-color: rgba(45, 212, 191, 0.5); }
 .ac-c:hover { border-color: rgba(139, 92, 246, 0.5); }
+.ac-d:hover { border-color: rgba(244, 114, 182, 0.5); }
 
 .tip {
   position: relative;

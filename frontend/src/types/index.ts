@@ -87,6 +87,13 @@ export interface Recommendation {
   cases: CaseItem[]
 }
 
+export interface BusinessData {
+  module: string
+  title: string
+  data: any
+  fallback: boolean
+}
+
 export interface TickerEvent {
   id: number
   type: string

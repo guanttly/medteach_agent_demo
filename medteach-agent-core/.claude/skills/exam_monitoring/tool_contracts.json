@@ -1,0 +1,18 @@
+{
+  "tools": [
+    {
+      "name": "list_exams",
+      "script": "tools/list_exams.py",
+      "desc": "查询考试列表（最近创建/进行/已结束的考试）",
+      "args": ["page?", "size?"],
+      "returns": "{ total, exams[] }"
+    },
+    {
+      "name": "get_exam_progress",
+      "script": "tools/get_exam_progress.py",
+      "desc": "查询某场考试的实时答题进度（默认最近一场）",
+      "args": [],
+      "returns": "{ label, published, entered, answering, submitted, remaining_seconds }"
+    }
+  ]
+}

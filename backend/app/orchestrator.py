@@ -18,8 +18,8 @@ from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-from . import mock_data
-from .agent_brain import agent_brain
+from . import mock_data, platform_bridge
+from .agent_brain import QUERY_INTENTS, agent_brain
 from .config import settings
 from .constants import DemoState, SharkState
 from .session_store import Session
@@ -62,6 +62,44 @@ class Orchestrator:
     def __init__(self) -> None:
         self._delay = settings.STEP_DELAY
         self._progress_delay = settings.PROGRESS_DELAY
+        # 语音业务查询模块 → 工具箱调用 / 大屏面板 / 口播话术 的统一路由表。
+        self._QUERY_DISPATCH: dict[str, dict[str, Any]] = {
+            "data_board": {
+                "title": "教学数据看板", "skill": "data_board Skill",
+                "ready_event": "data_board_ready", "call": platform_bridge.get_data_board,
+                "emit": None, "summary": self._summary_data_board,
+            },
+            "list_students": {
+                "title": "现场学员名册", "skill": "student_management Skill",
+                "ready_event": "students_ready", "call": platform_bridge.get_present_students,
+                "emit": self._emit_students_panel, "summary": self._summary_students,
+            },
+            "list_exams": {
+                "title": "考试列表", "skill": "exam_monitoring Skill",
+                "ready_event": "exam_list_ready", "call": platform_bridge.list_exams,
+                "emit": None, "summary": self._summary_exams,
+            },
+            "show_grading": {
+                "title": "阅卷成绩分析", "skill": "exam_grading Skill",
+                "ready_event": "report_ready", "call": platform_bridge.get_exam_result,
+                "emit": self._emit_result_panel, "summary": self._summary_grading,
+            },
+            "list_questions": {
+                "title": "题库", "skill": "question_bank Skill",
+                "ready_event": "question_bank_ready", "call": platform_bridge.list_questions,
+                "emit": None, "summary": self._summary_questions,
+            },
+            "recommend_cases": {
+                "title": "复训病例推荐", "skill": "case_recommend Skill",
+                "ready_event": "recommendation_ready", "call": platform_bridge.recommend_cases,
+                "emit": self._emit_recommend_panel, "summary": self._summary_recommend,
+            },
+            "list_teaching": {
+                "title": "教学计划", "skill": "teaching_plan Skill",
+                "ready_event": "teaching_plan_ready", "call": platform_bridge.list_teaching_plans,
+                "emit": None, "summary": self._summary_teaching,
+            },
+        }
 
     # ------------------------------------------------------------------ #
     # 基础事件推送
@@ -265,6 +303,9 @@ class Orchestrator:
         if intent == "arrange_exam":
             return await self._run_arrange(s, message)
 
+        if intent in QUERY_INTENTS:
+            return await self.handle_query(s, intent)
+
         await self._smalltalk_stream(s, message)
         return True
 
@@ -321,7 +362,27 @@ class Orchestrator:
             return "publish"
         if self._looks_like_arrange(message):
             return "arrange_exam"
+        query = self._query_intent_from_keywords(message)
+        if query is not None:
+            return query
         return "smalltalk"
+
+    @staticmethod
+    def _query_intent_from_keywords(message: str) -> str | None:
+        """无大模型时，用关键字把语音匹配到各业务查询模块（兜底路由）。"""
+        rules = (
+            ("show_grading", r"成绩|阅卷|分数|平均分|及格率|通过率|薄弱|报告|考得怎么样"),
+            ("recommend_cases", r"推荐病例|复训|训练病例|推荐.*病例|练什么|下一阶段"),
+            ("list_questions", r"题库|多少道题|有哪些题|题目列表|题型"),
+            ("list_teaching", r"教学计划|教学安排|教学阅片|排课|教学日程|谁来讲"),
+            ("data_board", r"看板|数据概览|整体情况|总览|运营|统计|多少场考试|多少套试卷"),
+            ("list_students", r"学员|名单|在科|多少人|有哪些人|谁来了"),
+            ("list_exams", r"考试列表|有哪些考试|哪些考试|答题进度|监考|交卷|考试进度"),
+        )
+        for intent, pattern in rules:
+            if re.search(pattern, message):
+                return intent
+        return None
 
     def _looks_like_arrange(self, message: str) -> bool:
         return any(k in message for k in ARRANGE_KEYWORDS)
@@ -349,6 +410,207 @@ class Orchestrator:
         await self._say_stream_text(s, text)
         await self._set_shark(s, SharkState.IDLE)
         await self._emit_state(s)
+
+    # ------------------------------------------------------------------ #
+    # 语音业务查询模块：调用真实工具箱取数 → 推大屏 → 语音播报（失败自动兜底 Mock）
+    # ------------------------------------------------------------------ #
+    async def handle_query(self, s: Session, intent: str) -> bool:
+        spec = self._QUERY_DISPATCH.get(intent)
+        if spec is None:
+            return False
+        if s.busy:
+            return False
+        s.busy = True
+        title = spec["title"]
+        try:
+            await self._set_shark(s, SharkState.THINKING)
+            await self._emit(
+                s,
+                "screen_event",
+                {
+                    "type": "tool_call_started",
+                    "title": f"正在查询{title}",
+                    "message": f"调用 {spec['skill']}",
+                    "status": "running",
+                },
+            )
+            await self._set_shark(s, SharkState.WORKING, f"正在查询{title}……")
+
+            try:
+                res = await asyncio.wait_for(spec["call"](), timeout=12.0)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("business query %s failed: %s", intent, exc)
+                res = {"ok": False, "fallback": True, "data": None,
+                       "error": {"message": str(exc)}}
+
+            data = res.get("data")
+            fallback = bool(res.get("fallback"))
+            ok = bool(res.get("ok")) and data is not None
+            if ok and not fallback:
+                self._mark_live(s)
+            else:
+                self._mark_fallback(s)
+
+            # 通用业务数据事件（大屏统一业务面板）。
+            await self._emit(
+                s,
+                "business_data_update",
+                {"module": intent, "title": title, "data": data, "fallback": fallback},
+            )
+            # 模块专属事件（复用既有大屏面板：学员 / 成绩 / 病例）。
+            emit_extra = spec.get("emit")
+            if emit_extra is not None and data is not None:
+                await emit_extra(s, data)
+
+            if data is not None:
+                summary = spec["summary"](data, fallback)
+            else:
+                summary = f"{title}这边暂时没取到数据，我先用演示数据顶上，咱们继续。"
+            await self._say_stream_text(s, summary)
+
+            await self._emit(
+                s,
+                "screen_event",
+                {
+                    "type": spec["ready_event"],
+                    "title": title,
+                    "message": summary,
+                    "status": "completed",
+                    "payload": {"fallback": fallback, "module": intent},
+                },
+            )
+            await self._set_shark(
+                s, SharkState.SUCCESS if ok else SharkState.SOFT_WARNING
+            )
+            return True
+        finally:
+            s.busy = False
+            await self._emit_state(s)
+
+    # ---- 模块专属面板事件（复用既有前端组件） ---- #
+    async def _emit_students_panel(self, s: Session, data: dict[str, Any]) -> None:
+        s.students = data
+        await self._emit(s, "students_update", {"students": data})
+
+    async def _emit_result_panel(self, s: Session, data: dict[str, Any]) -> None:
+        s.result = data
+        await self._emit(s, "exam_result_update", {"result": data})
+
+    async def _emit_recommend_panel(self, s: Session, data: dict[str, Any]) -> None:
+        s.recommendation = data
+        await self._emit(s, "case_recommendation_update", {"recommendation": data})
+
+    # ---- 各模块口播话术（确定性，低延迟、稳定可朗读） ---- #
+    @staticmethod
+    def _fb(fallback: bool) -> str:
+        return "（演示数据）" if fallback else ""
+
+    @staticmethod
+    def _summary_data_board(data: dict[str, Any], fallback: bool) -> str:
+        exam = (data or {}).get("exam", {})
+        teaching = (data or {}).get("teaching", {})
+        en = int(exam.get("exam_num") or 0)
+        pn = int(exam.get("paper_num") or 0)
+        qn = int(exam.get("question_num") or 0)
+        avg = exam.get("exam_avg")
+        edn = int(teaching.get("education_num") or 0)
+        prefix = Orchestrator._fb(fallback)
+        avg_txt = f"，考试平均分约 {avg} 分" if avg else ""
+        edu_txt = f"；教学方面累计 {edn} 场活动" if edn else ""
+        return (
+            f"{prefix}目前平台上一共有 {en} 场考试、{pn} 套试卷、{qn} 道题目{avg_txt}{edu_txt}。"
+            "您可以让我直接安排一场新的考试。"
+        )
+
+    @staticmethod
+    def _summary_students(data: dict[str, Any], fallback: bool) -> str:
+        total = int(data.get("total") or len(data.get("students") or []))
+        students = data.get("students") or []
+        names = "、".join(str(x.get("name")) for x in students[:3] if x.get("name"))
+        group = data.get("group_name") or "现场学员"
+        prefix = Orchestrator._fb(fallback)
+        sample = f"，比如{names}等" if names else ""
+        return (
+            f"{prefix}{group}一共 {total} 位{sample}。"
+            "需要的话，我可以直接给他们安排一场胸部 CT 基础考试。"
+        )
+
+    @staticmethod
+    def _summary_exams(data: dict[str, Any], fallback: bool) -> str:
+        total = int(data.get("total") or len(data.get("exams") or []))
+        exams = data.get("exams") or []
+        prefix = Orchestrator._fb(fallback)
+        if not exams:
+            return f"{prefix}目前还没有已创建的考试，要不要我现在安排一场？"
+        first = exams[0]
+        name = first.get("name") or "未命名考试"
+        minutes = first.get("minutes") or 0
+        status = first.get("status") or ""
+        return (
+            f"{prefix}最近一共有 {total} 场考试，最新的是「{name}」，"
+            f"时长 {minutes} 分钟、当前状态{status}。要不要看某一场的答题进度或成绩？"
+        )
+
+    @staticmethod
+    def _summary_grading(data: dict[str, Any], fallback: bool) -> str:
+        summary = data.get("summary") or {}
+        weak = data.get("weak_points") or []
+        name = data.get("exam_name") or "这场考试"
+        prefix = Orchestrator._fb(fallback)
+        avg = summary.get("average", 0)
+        pass_rate = summary.get("pass_rate", 0)
+        weak_txt = "、".join(str(w.get("name")) for w in weak[:3] if w.get("name"))
+        weak_part = f"；薄弱点主要集中在{weak_txt}" if weak_txt else ""
+        return (
+            f"{prefix}「{name}」平均分 {avg} 分、及格率 {pass_rate}%{weak_part}。"
+            "我可以据此为学员推荐复训病例。"
+        )
+
+    @staticmethod
+    def _summary_questions(data: dict[str, Any], fallback: bool) -> str:
+        total = int(data.get("total") or len(data.get("questions") or []))
+        questions = data.get("questions") or []
+        prefix = Orchestrator._fb(fallback)
+        types = []
+        for q in questions:
+            t = q.get("type")
+            if t and t != "—" and t not in types:
+                types.append(t)
+        type_txt = "、".join(types[:4]) if types else "多种题型"
+        return (
+            f"{prefix}题库里目前一共有 {total} 道题，涵盖{type_txt}等题型。"
+            "组卷时我会从这里挑选合适的题目。"
+        )
+
+    @staticmethod
+    def _summary_recommend(data: dict[str, Any], fallback: bool) -> str:
+        cases = data.get("cases") or []
+        next_goal = data.get("next_goal") or ""
+        prefix = Orchestrator._fb(fallback)
+        if not cases:
+            return f"{prefix}{next_goal}"
+        first = cases[0].get("title") or "典型病例"
+        return (
+            f"{prefix}针对薄弱点，我推荐了 {len(cases)} 个复训病例，"
+            f"比如「{first}」。{next_goal}"
+        )
+
+    @staticmethod
+    def _summary_teaching(data: dict[str, Any], fallback: bool) -> str:
+        total = int(data.get("total") or len(data.get("plans") or []))
+        plans = data.get("plans") or []
+        prefix = Orchestrator._fb(fallback)
+        if not plans:
+            return f"{prefix}近期暂时没有教学安排。"
+        first = plans[0]
+        subject = first.get("subject") or "教学安排"
+        when = first.get("education_time") or ""
+        lecturer = first.get("lecturer") or ""
+        who = f"，由{lecturer}主讲" if lecturer and lecturer != "—" else ""
+        return (
+            f"{prefix}近期教学安排一共有 {total} 项，最新的是「{subject}」"
+            f"（{when}）{who}。"
+        )
 
     async def _run_arrange(self, s: Session, message: str) -> bool:
         if s.busy:

@@ -16,11 +16,13 @@ import logging
 import re
 from typing import TYPE_CHECKING
 
-from .. import mock_data
+from .. import mock_data, platform_bridge
 from ..agent_brain import agent_brain
+from ..claude_code_client import claude_client
 from ..config import settings
 from ..constants import DemoState, SharkState
 from ..tasks import spawn
+from . import business
 from .events import Ev, event_bus
 from .facts import facts_resolver
 from .models import JobStatus, Priority, Turn, TurnRoute, next_turn_id
@@ -69,6 +71,20 @@ ACK = {
     "reset": "好的。我把演示重置，您可以重新开始。",
     "modify": "可以。我先记下这个调整，再同步更新考试方案。",
 }
+
+# 执行较慢的查询 / CC 任务时的「执行中安抚」轮播句：保持与用户的语音沟通，不让其干等工具返回。
+REASSURE_LINES = (
+    "还在查，请您稍等一下。",
+    "我正在调取相关数据，马上就好。",
+    "这边还在处理，尽快给您结果。",
+)
+
+# 疑似「需要查平台数据 / 复杂分析」的问题：未命中固定 skill 时交给 CC 自主编排工具并组织答案。
+_AGENTIC_HINT_RE = re.compile(
+    "考试|学员|学生|成绩|分数|及格|通过率|题目|题库|教学|阅片|病例|复训|训练|"
+    "数据|看板|统计|报告|分析|对比|评估|掌握|薄弱|知识点|建议|方案|怎么|如何|"
+    "为什么|哪些|多少|情况|表现|进度|排课|计划|推荐"
+)
 
 
 class ConversationGateway:
@@ -140,6 +156,8 @@ class ConversationGateway:
             await self._route_modify(s, turn, text)
         elif route == TurnRoute.CONTEXT_QUESTION:
             await self._route_context_question(s, turn, text)
+        elif route == TurnRoute.BUSINESS_QUERY:
+            await self._route_business_query(s, turn)
         elif route == TurnRoute.CONFIRM:
             await self._route_confirm(s, turn)
         elif route == TurnRoute.PUBLISH:
@@ -217,6 +235,181 @@ class ConversationGateway:
                 s, focus_topic=qa.topic, turn_id=turn.turn_id, respect_user_active=False
             )
         await self._restore_idle_shark(s)
+
+    async def _route_business_query(self, s: "Session", turn: Turn) -> None:
+        """业务查询：调用 medteach-agent-core 真实工具箱取数，刷新大屏面板并口播总结。
+
+        这是修复「控制台选 Real，问答仍走强制模板」的核心：业务问题不再被本地
+        facts 模板拦截，而是真正命中 TeachingPlatformClient（real/hybrid/mock）。
+        """
+        intent = s.conversation.pop("pending_business_intent", None) or business.detect_intent(turn.text)
+        sp = business.spec(intent) if intent else None
+        if sp is None:
+            await self._route_smalltalk(s, turn, turn.text)
+            return
+        turn.routed_as = TurnRoute.BUSINESS_QUERY.value
+        s.conversation["last_business_intent"] = intent
+        s.record_first_response(turn)
+        title = sp["title"]
+        logger.info(
+            "route=business_query intent=%s engine=%s skill=%s",
+            intent, settings.AGENT_ENGINE, sp["skill"],
+        )
+        await presenter.set_shark(s, SharkState.WORKING, f"正在查询{title}…")
+        await presenter.emit_screen_event(
+            s,
+            {"type": "tool_call_started", "title": f"正在查询{title}",
+             "message": f"调用真实工具箱 · {sp['skill']}", "status": "running", "module": intent},
+        )
+        # 1) 立即安抚：先接住用户、保持语音沟通，不让其干等工具返回（前台不被后台执行阻塞）。
+        await speaker.say(
+            s, f"好的，我现在去查一下{title}，稍等。",
+            priority=Priority.NORMAL.value, turn_id=turn.turn_id,
+            source="reassure", shark_state=SharkState.WORKING,
+        )
+        # 2) 执行真实工具箱取数：带「执行中安抚」心跳，慢任务期间周期补一句，保持沟通。
+        import time as _time
+
+        _t0 = _time.monotonic()
+        res = await self._await_with_reassurance(
+            s, turn, self._safe_cached_read(intent, sp["call"]),
+        )
+        elapsed = _time.monotonic() - _t0
+        data = res.get("data") if isinstance(res, dict) else None
+        fallback = bool(res.get("fallback")) if isinstance(res, dict) else True
+
+        # 通用业务数据面板（大屏 BusinessDataPanel）
+        await event_bus.emit_legacy(
+            s, "business_data_update",
+            {"module": intent, "title": title, "data": data, "fallback": fallback},
+        )
+        # 专属面板：学员名册 / 成绩报告 / 病例推荐（与金线 workflow 同款事件）
+        panel = sp.get("panel")
+        if data is not None and panel == "students":
+            s.students = data
+            await presenter.emit_domain(
+                s, fact_path="participants", legacy_type="students_update",
+                legacy_data={"students": data},
+            )
+        elif data is not None and panel == "result":
+            s.result = data
+            await presenter.emit_domain(
+                s, fact_path="result", legacy_type="exam_result_update",
+                legacy_data={"result": data},
+            )
+        elif data is not None and panel == "recommendation":
+            s.recommendation = data
+            await presenter.emit_domain(
+                s, fact_path="recommendation", legacy_type="case_recommendation_update",
+                legacy_data={"recommendation": data},
+            )
+
+        facts = business.summarize(intent, data, fallback)
+        summary = await self._compose_business_answer(s, turn, facts)
+        # 3) 主动汇报：查询完成，向用户汇报结果。耗时较久时加「查好了」衔接，秒回则直接说结果。
+        report = self._as_report(title, summary, elapsed)
+        await speaker.say(
+            s, report, priority=Priority.HIGH.value, turn_id=turn.turn_id,
+            source="business_qa", shark_state=SharkState.SPEAKING,
+        )
+        await presenter.emit_screen_event(
+            s,
+            {"type": sp["ready_event"], "title": title, "message": report,
+             "status": "completed", "module": intent, "fallback": fallback},
+        )
+        await self._restore_idle_shark(s)
+
+    async def _safe_cached_read(self, intent: str, call) -> dict:
+        """真实工具箱取数（永不抛）：超时/异常都吞成 dict 结果，保证展厅不翻车。"""
+        try:
+            # 预热缓存命中即时返回真数据；冷调用 5~20s，故超时放宽到 25s。
+            res = await asyncio.wait_for(
+                platform_bridge.cached_read(intent, call), timeout=25.0
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("business query %s failed: %s", intent, exc)
+            res = {"ok": False, "fallback": True, "data": None, "error": {"message": str(exc)}}
+        return res if isinstance(res, dict) else {"ok": False, "fallback": True, "data": None}
+
+    async def _await_with_reassurance(
+        self,
+        s: "Session",
+        turn: Turn,
+        coro,
+        *,
+        reassure_lines: tuple[str, ...] = REASSURE_LINES,
+        first_delay: float = 3.0,
+        interval: float = 4.5,
+    ):
+        """等待较慢任务；执行期间周期补一句安抚口播，保持与用户的语音沟通（前台不被阻塞）。
+
+        安抚走 speaker.say（NORMAL，可被打断）；用户插话会推进 generation，speaker 检测到
+        即中止本句，不会与用户抢话。传入的 coro 必须自带兜底（永不抛），异常请在 coro 内吞掉。
+        """
+        task = asyncio.ensure_future(coro)
+        gen = s.generation
+        tick = 0
+        while not task.done():
+            timeout = first_delay if tick == 0 else interval
+            try:
+                return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+            except asyncio.TimeoutError:
+                # 用户已打断本轮（新一代）或正在说话：不抢话，仅静默等任务收尾。
+                if s.generation == gen and not s.user_active:
+                    line = reassure_lines[tick % len(reassure_lines)]
+                    await speaker.say(
+                        s, line, priority=Priority.NORMAL.value, turn_id=turn.turn_id,
+                        source="reassure", shark_state=SharkState.WORKING,
+                    )
+                tick += 1
+        return task.result()
+
+    @staticmethod
+    def _as_report(title: str, summary: str, elapsed: float) -> str:
+        """完成汇报话术：耗时较久时加「查好了」衔接（主动告知完成），秒回则直接说结果。"""
+        summary = (summary or "").strip()
+        if not summary:
+            return f"{title}我看过了，不过这次没拿到更多可说的内容。"
+        if elapsed >= 2.0:
+            return f"好，{title}我查好了。{summary}"
+        return summary
+
+    async def _refine_business_answer(self, s: "Session", user_text: str, facts: str) -> str:
+        """用 LLM 把确定性事实话术按用户问法自然改写；失败/超时回退事实话术（杜绝编造）。"""
+        if not settings.voice_summary_llm_enabled:
+            return facts
+        refined = await agent_brain.refine_answer(
+            user_text=user_text, facts=facts, budget=settings.VOICE_SUMMARY_LLM_BUDGET,
+        )
+        return refined or facts
+
+    async def _compose_business_answer(self, s: "Session", turn: Turn, facts: str) -> str:
+        """生成业务回答话术（引擎可切换，三层兑底永不翻车）。
+
+        AGENT_ENGINE：
+        - ``claude``：交给 Claude Code 自主选 MCP 工具、调真实工具箱、口语化总结，
+          完整落地「意图识别→交给 Claude 工具调用总结→语音回答」链路。
+        - ``hybrid`` / ``deepseek``：DeepSeek flash 按用户问法自然改写确定性事实（快路径，
+          展厅默认，300ms~3s 出话，保证流畅无感）。
+        Claude 失败/超时 → 回退 DeepSeek 改写 → 回退确定性事实。
+        """
+        if settings.AGENT_ENGINE == "claude" and settings.claude_agentic_enabled:
+            agentic = await self._agentic_business_answer(turn.text)
+            if agentic:
+                s.conversation["last_answer_engine"] = "claude_agentic"
+                return agentic
+        s.conversation["last_answer_engine"] = "deepseek_refine"
+        return await self._refine_business_answer(s, turn.text, facts)
+
+    async def _agentic_business_answer(self, user_text: str) -> str | None:
+        """交给 Claude：自主选 MCP 工具、调真实工具箱、口语化总结。失败/超时返回 None。"""
+        try:
+            result = await claude_client.run_agentic_query(user_text)
+        except Exception as exc:  # noqa: BLE001 - 任何异常都回退快路径，保证展厅不翻车
+            logger.warning("claude agentic business answer failed: %s", exc)
+            return None
+        text = (result or {}).get("assistant_text")
+        return text.strip() if isinstance(text, str) and text.strip() else None
 
     async def _route_arrange(self, s: "Session", turn: Turn) -> None:
         # 已有进行中的安排 job：当作上下文/澄清，避免重复起任务
@@ -330,6 +523,11 @@ class ConversationGateway:
         await self.reset(s)
 
     async def _route_smalltalk(self, s: "Session", turn: Turn, text: str) -> None:
+        # 复杂/疑似业务问题：交给 Claude Code 自主选 MCP 工具、调真实工具箱、组织答案（CC 底色）。
+        # 命中固定 skill 的标准查询不会落到这里（已被 BUSINESS_QUERY 处理），简单查询仍走快路径秒回。
+        if settings.claude_agentic_enabled and self._looks_agentic(text):
+            if await self._route_agentic_smalltalk(s, turn, text):
+                return
         if settings.chat_llm_configured:
             from ..agent_brain import agent_brain
             from .. import mock_data
@@ -355,6 +553,52 @@ class ConversationGateway:
             priority=Priority.NORMAL.value, turn_id=turn.turn_id, source="smalltalk",
         )
         await self._restore_idle_shark(s)
+
+    async def _route_agentic_smalltalk(self, s: "Session", turn: Turn, text: str) -> bool:
+        """把复杂/开放问题交给 Claude Code 自主编排（选工具→调真实工具箱→口语化总结）。
+
+        立即安抚保持语音沟通 → CC 自主执行（带心跳安抚）→ 完成后主动汇报。
+        CC 失败/超时/空结果返回 False，由调用方回退 DeepSeek flash 聊天，三层兜底永不翻车。
+        """
+        s.record_first_response(turn)
+        logger.info("route=smalltalk delegate=claude_agentic text=%r", text[:40])
+        await presenter.set_shark(s, SharkState.WORKING, "正在分析…")
+        # 立即安抚：复杂任务通常较慢，先接住用户、保持沟通，不让其干等。
+        await speaker.say(
+            s, "这个问题我需要查一下平台数据再回答您，稍等。",
+            priority=Priority.NORMAL.value, turn_id=turn.turn_id,
+            source="reassure", shark_state=SharkState.WORKING,
+        )
+        answer = await self._await_with_reassurance(s, turn, self._safe_agentic_query(text))
+        if not answer:
+            logger.info("claude agentic empty/failed; fallback to flash smalltalk")
+            return False
+        await speaker.say(
+            s, answer, priority=Priority.HIGH.value, turn_id=turn.turn_id,
+            source="agentic_qa", shark_state=SharkState.SPEAKING,
+        )
+        await self._restore_idle_shark(s)
+        return True
+
+    async def _safe_agentic_query(self, text: str) -> str | None:
+        """调用 Claude Code 自主工具通道（永不抛）：失败/超时/空结果返回 None。"""
+        try:
+            result = await asyncio.wait_for(
+                claude_client.run_agentic_query(text),
+                timeout=settings.CLAUDE_AGENTIC_TIMEOUT + 8,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("claude agentic query failed: %s", exc)
+            return None
+        txt = (result or {}).get("assistant_text") if isinstance(result, dict) else None
+        return txt.strip() if isinstance(txt, str) and txt.strip() else None
+
+    def _looks_agentic(self, text: str) -> bool:
+        """是否「复杂/疑似业务」问题：值得交给 CC 自主编排（纯寒暄/语气词不劳 CC）。"""
+        t = (text or "").strip()
+        if len(t) < 4:
+            return False
+        return bool(_AGENTIC_HINT_RE.search(t))
 
     # ------------------------------------------------------------------ #
     # 供 REST / 控制台直接调用
@@ -447,6 +691,8 @@ class ConversationGateway:
 
     async def set_mode(self, s: "Session", mode: str) -> None:
         s.mode = mode
+        # 真实/Mock 切换同步到工具箱单例，让 Real 模式的业务查询真正直连平台。
+        platform_bridge.set_mode(mode)
         await presenter.emit_state(s)
 
     # ------------------------------------------------------------------ #
@@ -457,6 +703,14 @@ class ConversationGateway:
             return TurnRoute.RESET
         if re.search(r"停一?下|取消|暂停|停止|先别|不用了|别说了", text):
             return TurnRoute.CANCEL
+        # 业务查询：命中关键词直连真实工具箱取数（修复「Real 模式问答仍走模板」）。
+        # 金线（安排考试）进行中时，本场相关问题让位 facts，回答「这一场」而非平台全局。
+        biz_intent = business.detect_intent(text)
+        if biz_intent is not None and not (
+            biz_intent in business.FACTS_BACKED_INTENTS and s.active_jobs()
+        ):
+            s.conversation["pending_business_intent"] = biz_intent
+            return TurnRoute.BUSINESS_QUERY
         if facts_resolver.looks_like_context_question(text):
             return TurnRoute.CONTEXT_QUESTION
         if self._looks_like_modify(s, text):
@@ -469,7 +723,41 @@ class ConversationGateway:
 
         if any(k in text for k in ARRANGE_KEYWORDS):
             return TurnRoute.START_JOB
+
+        # 正则未命中明确意图 → LLM 语义意图识别兜底（让自然问法也能指向真实工具）。
+        # 失败/超时返回 None，回退 smalltalk，保证零回归、不阻塞语音关键路径。
+        llm_route = await self._llm_intent_route(s, text)
+        if llm_route is not None:
+            return llm_route
         return TurnRoute.SMALLTALK
+
+    async def _llm_intent_route(self, s: "Session", text: str) -> TurnRoute | None:
+        """正则兜底之外的 LLM 语义意图识别（限时；失败/超时返回 None 回退 smalltalk）。"""
+        if not settings.voice_intent_llm_enabled:
+            return None
+        intent = await agent_brain.classify_voice_intent(
+            message=text, state=s.state, budget=settings.VOICE_INTENT_LLM_BUDGET,
+            need_confirm=s.need_user_confirmation, confirmation_type=s.confirmation_type,
+            default_plan=mock_data.exam_plan_default(),
+        )
+        if not intent:
+            return None
+        s.conversation["last_intent_source"] = "llm"
+        if intent in business.QUERY_INTENTS:
+            # 金线进行中且为本场相关意图：让位 facts 上下文问答，回答「这一场」。
+            if intent in business.FACTS_BACKED_INTENTS and s.active_jobs():
+                return None
+            s.conversation["pending_business_intent"] = intent
+            return TurnRoute.BUSINESS_QUERY
+        if intent == "arrange_exam":
+            return TurnRoute.START_JOB
+        if intent in ("confirm", "publish") and s.need_user_confirmation:
+            if intent == "publish" or s.confirmation_type == "confirm_publish":
+                return TurnRoute.PUBLISH
+            return TurnRoute.CONFIRM
+        if intent == "reset":
+            return TurnRoute.RESET
+        return None
 
     def _local_confirmation_route(self, s: "Session", text: str) -> TurnRoute | None:
         normalized = self._normalize_intent_text(text)

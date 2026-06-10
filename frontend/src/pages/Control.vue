@@ -20,6 +20,17 @@ const JUMPS = [
   { label: '病例推荐', target: 'DONE' }
 ]
 
+// 业务模块语音指令：模拟现场讲师语音，触发各大教学业务（真实工具箱取数）。
+const BUSINESS = [
+  { label: '数据看板', icon: 'chart', text: '看一下数据看板' },
+  { label: '学员名册', icon: 'users', text: '现场有哪些学员' },
+  { label: '考试列表', icon: 'clipboard', text: '现在有哪些考试' },
+  { label: '成绩分析', icon: 'chart', text: '看一下考试成绩' },
+  { label: '题库', icon: 'document', text: '题库里有哪些题' },
+  { label: '病例推荐', icon: 'bulb', text: '推荐几个复训病例' },
+  { label: '教学计划', icon: 'monitor', text: '最近有哪些教学计划' }
+]
+
 function sendMsg() {
   const t = msg.value.trim()
   if (!t) return
@@ -83,6 +94,16 @@ function sendMsg() {
               {{ i + 1 }} · {{ j.label }}
             </button>
           </div>
+        </section>
+
+        <section class="panel glass">
+          <h3>业务模块（语音指令 · 真实平台数据）</h3>
+          <div class="btns">
+            <button v-for="b in BUSINESS" :key="b.label" class="btn ghost" @click="store.sendMessage(b.text)">
+              <AppIcon :name="b.icon" :size="15" /> {{ b.label }}
+            </button>
+          </div>
+          <p class="agent-tip">点击即模拟现场语音指令，智能体经对应 Skill 调用教学平台工具箱取真实数据。</p>
         </section>
 
         <section class="panel glass">

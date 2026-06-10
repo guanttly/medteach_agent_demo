@@ -26,6 +26,8 @@ let analyser: AnalyserNode | null = null
 let mouthBuf: Uint8Array | null = null
 let mouthRaf = 0
 let browserTimer = 0
+let browserKeepAlive = 0
+let browserTimeout = 0
 
 // ---- 流式 PCM 调度 ----
 let nextStartTime = 0
@@ -33,6 +35,9 @@ const activeSources = new Set<AudioBufferSourceNode>()
 let streamSampleRate = 16000
 let pcmRemainder: Uint8Array | null = null
 let currentRecvId = -1
+let pendingPcmChunks: Uint8Array[] = []
+let pcmFlushActive = false
+let pcmFlushSeq = 0
 
 // ---- 后端流式 TTS 通道 ----
 let ttsWs: WebSocket | null = null
@@ -51,15 +56,35 @@ const reqText = new Map<number, string>()
 // ---- 浏览器兜底队列 ----
 let browserQueue: string[] = []
 let browserActive = false
+let browserPumpSeq = 0
 
 // ---- 运行/取消代 + 输入流状态 ----
 let runId = 0
 let streamOpen = false
 
+const DUCK_GAIN = 0.45
+const MAX_PENDING_PCM_CHUNKS = 240
 const SENTENCE_SPLIT = /[^。！？!?；;…\n]*[。！？!?；;…\n]|[^。！？!?；;…\n]+$/g
 
 function setMouth(v: number) {
   activeStore?.setMouth(v)
+}
+
+function resumeAudioContext(): Promise<boolean> {
+  if (!ctx) return Promise.resolve(false)
+  if (ctx.state === 'running') return Promise.resolve(true)
+  return ctx
+    .resume()
+    .then(() => ctx?.state === 'running')
+    .catch(() => false)
+}
+
+async function ensureAudioContextRunning(): Promise<boolean> {
+  if (!ctx) return false
+  if (ctx.state === 'running') return true
+  if (await resumeAudioContext()) return true
+  await new Promise((resolve) => setTimeout(resolve, 160))
+  return resumeAudioContext()
 }
 
 function enable() {
@@ -80,7 +105,7 @@ function enable() {
       }
     }
   }
-  void ctx?.resume()
+  resumeAudioContext()
   if (!ctx) {
     // 没有 Web Audio：只能走浏览器 TTS
     provider = 'browser'
@@ -211,7 +236,21 @@ function handleWsMessage(e: MessageEvent) {
   const data = e.data
   if (data instanceof ArrayBuffer) {
     if (currentRecvId >= 0 && liveReqs.has(currentRecvId)) {
-      schedulePcm(new Uint8Array(data))
+      enqueuePcm(new Uint8Array(data))
+    }
+    return
+  }
+  if (data instanceof Blob) {
+    const recvId = currentRecvId
+    if (recvId >= 0 && liveReqs.has(recvId)) {
+      void data
+        .arrayBuffer()
+        .then((buf) => {
+          if (recvId >= 0 && recvId === currentRecvId && liveReqs.has(recvId)) {
+            enqueuePcm(new Uint8Array(buf))
+          }
+        })
+        .catch(() => undefined)
     }
     return
   }
@@ -273,8 +312,63 @@ function sendSynthesize(text: string) {
 // ------------------------------------------------------------------ //
 // 流式 PCM 播放（无缝调度）
 // ------------------------------------------------------------------ //
+function enqueuePcm(bytes: Uint8Array) {
+  if (!bytes.length) return
+  pendingPcmChunks.push(bytes)
+  if (pendingPcmChunks.length > MAX_PENDING_PCM_CHUNKS) {
+    pendingPcmChunks.splice(0, pendingPcmChunks.length - MAX_PENDING_PCM_CHUNKS)
+  }
+  void flushPcmQueue()
+}
+
+async function flushPcmQueue() {
+  if (pcmFlushActive) return
+  pcmFlushActive = true
+  const seq = pcmFlushSeq
+  try {
+    const ok = await ensureAudioContextRunning()
+    if (seq !== pcmFlushSeq) return
+    if (!ok) {
+      fallbackStreamToBrowser()
+      return
+    }
+    while (pendingPcmChunks.length && seq === pcmFlushSeq) {
+      const bytes = pendingPcmChunks.shift()
+      if (bytes) schedulePcm(bytes)
+    }
+  } finally {
+    pcmFlushActive = false
+  }
+  if (pendingPcmChunks.length) void flushPcmQueue()
+}
+
+function fallbackStreamToBrowser() {
+  provider = 'browser'
+  pcmFlushSeq += 1
+  pendingPcmChunks = []
+  pcmRemainder = null
+  currentRecvId = -1
+  wsSend({ type: 'cancel' })
+  sendBuffer = []
+  if (reqText.size) {
+    const ids = [...reqText.keys()].sort((a, b) => a - b)
+    for (const id of ids) {
+      const text = reqText.get(id)
+      reqText.delete(id)
+      if (liveReqs.has(id)) {
+        liveReqs.delete(id)
+        pendingSynth = Math.max(0, pendingSynth - 1)
+      }
+      if (text) browserQueue.push(text)
+    }
+    ensureBrowserPump()
+  }
+  maybeIdle()
+}
+
 function schedulePcm(bytes: Uint8Array) {
   if (!ctx || !gainNode) return
+  resumeAudioContext()
   let buf = bytes
   if (pcmRemainder && pcmRemainder.length) {
     const merged = new Uint8Array(pcmRemainder.length + bytes.length)
@@ -352,6 +446,10 @@ function stopMouthLoop() {
   mouthRaf = 0
   if (browserTimer) clearInterval(browserTimer)
   browserTimer = 0
+  if (browserKeepAlive) clearInterval(browserKeepAlive)
+  browserKeepAlive = 0
+  if (browserTimeout) clearTimeout(browserTimeout)
+  browserTimeout = 0
 }
 
 // ------------------------------------------------------------------ //
@@ -359,22 +457,24 @@ function stopMouthLoop() {
 // ------------------------------------------------------------------ //
 function ensureBrowserPump() {
   if (browserActive) return
-  void browserPump()
+  void browserPump(++browserPumpSeq)
 }
 
-async function browserPump() {
+async function browserPump(pumpId: number) {
   browserActive = true
   while (browserQueue.length) {
     const text = browserQueue.shift() as string
     const my = runId
     await speakBrowserOnce(text, my)
     if (my !== runId) {
-      browserActive = false
+      if (browserPumpSeq === pumpId) browserActive = false
       return
     }
   }
-  browserActive = false
-  maybeIdle()
+  if (browserPumpSeq === pumpId) {
+    browserActive = false
+    maybeIdle()
+  }
 }
 
 function speakBrowserOnce(text: string, myRun: number): Promise<void> {
@@ -394,29 +494,75 @@ function speakBrowserOnce(text: string, myRun: number): Promise<void> {
     if (zh) u.voice = zh
 
     let t = 0
+    let started = false
+    let settled = false
+    const cleanup = (cancelCurrent: boolean) => {
+      if (settled) return
+      settled = true
+      if (browserTimer) clearInterval(browserTimer)
+      browserTimer = 0
+      if (browserKeepAlive) clearInterval(browserKeepAlive)
+      browserKeepAlive = 0
+      if (browserTimeout) clearTimeout(browserTimeout)
+      browserTimeout = 0
+      if (cancelCurrent) {
+        try {
+          synth.cancel()
+        } catch {
+          /* noop */
+        }
+      }
+      if (activeSources.size === 0) setMouth(0)
+      resolve()
+    }
+    const done = () => cleanup(false)
+    const startedAt = Date.now()
+    const maxMs = Math.min(45000, Math.max(6000, text.length * 360 + 2500))
+
     if (browserTimer) clearInterval(browserTimer)
     browserTimer = window.setInterval(() => {
-      if (myRun !== runId) return
+      if (myRun !== runId) {
+        cleanup(false)
+        return
+      }
       t += 0.18
       const v = 0.45 + 0.45 * Math.abs(Math.sin(t * 6)) * (0.6 + Math.random() * 0.4)
       setMouth(Math.min(1, v))
     }, 60)
 
-    const done = () => {
-      if (browserTimer) clearInterval(browserTimer)
-      browserTimer = 0
-      if (activeSources.size === 0) setMouth(0)
-      resolve()
+    if (browserKeepAlive) clearInterval(browserKeepAlive)
+    browserKeepAlive = window.setInterval(() => {
+      if (myRun !== runId) {
+        cleanup(false)
+        return
+      }
+      try {
+        if (synth.paused) synth.resume()
+        if (started && !synth.speaking && !synth.pending) cleanup(false)
+        if (!started && Date.now() - startedAt > 1600 && !synth.speaking && !synth.pending) {
+          cleanup(false)
+        }
+      } catch {
+        cleanup(false)
+      }
+    }, 700)
+
+    if (browserTimeout) clearTimeout(browserTimeout)
+    browserTimeout = window.setTimeout(() => cleanup(true), maxMs)
+
+    u.onstart = () => {
+      started = true
     }
     u.onend = () => {
-      if (myRun !== runId) return resolve()
+      if (myRun !== runId) return cleanup(false)
       done()
     }
     u.onerror = () => {
-      if (myRun !== runId) return resolve()
+      if (myRun !== runId) return cleanup(false)
       done()
     }
     try {
+      if (synth.paused) synth.resume()
       synth.speak(u)
     } catch {
       done()
@@ -443,6 +589,9 @@ function setIdle() {
   speakingNow.value = false
   stopMouthLoop()
   setMouth(0)
+  nextStartTime = 0
+  pcmRemainder = null
+  pendingPcmChunks = []
 }
 
 // ------------------------------------------------------------------ //
@@ -451,6 +600,7 @@ function setIdle() {
 /** 开始一段新的流式播报：打开输入流（接到当前播报之后顺序播放）。 */
 function reset() {
   if (!enabled.value) return
+  resumeAudioContext()
   void ensureConfig()
   if (provider !== 'browser') connectWs()
   restore()
@@ -461,6 +611,7 @@ function reset() {
 /** 追加一段文本（自动切句后逐句送合成）。 */
 function enqueue(text: string) {
   if (!enabled.value) return
+  resumeAudioContext()
   const parts = splitSentences(text)
   if (!parts.length) return
   speakingNow.value = true
@@ -500,7 +651,10 @@ function stop() {
   pendingSynth = 0
   currentRecvId = -1
   pcmRemainder = null
+  pendingPcmChunks = []
+  pcmFlushSeq += 1
   browserQueue = []
+  browserPumpSeq += 1
   for (const src of activeSources) {
     try {
       src.onended = null
@@ -533,9 +687,10 @@ function duck() {
   if (gainNode && ctx) {
     try {
       gainNode.gain.cancelScheduledValues(ctx.currentTime)
-      gainNode.gain.setTargetAtTime(0.12, ctx.currentTime, 0.05)
+      gainNode.gain.setValueAtTime(gainNode.gain.value, ctx.currentTime)
+      gainNode.gain.setTargetAtTime(DUCK_GAIN, ctx.currentTime, 0.05)
     } catch {
-      gainNode.gain.value = 0.12
+      gainNode.gain.value = DUCK_GAIN
     }
   }
 }
@@ -545,14 +700,21 @@ function restore() {
   if (gainNode && ctx) {
     try {
       gainNode.gain.cancelScheduledValues(ctx.currentTime)
-      gainNode.gain.setTargetAtTime(1, ctx.currentTime, 0.08)
+      gainNode.gain.setValueAtTime(gainNode.gain.value, ctx.currentTime)
+      gainNode.gain.setTargetAtTime(1, ctx.currentTime, 0.06)
     } catch {
       gainNode.gain.value = 1
     }
   }
 }
 
+/** 唤醒音频上下文（页面回到前台、或浏览器在后台自动挂起后重新激活）。 */
+function resume() {
+  if (!enabled.value) return
+  resumeAudioContext()
+}
+
 export function useTts() {
   activeStore = useDemoStore()
-  return { enabled, speakingNow, enable, speak, reset, enqueue, finish, stop, duck, restore }
+  return { enabled, speakingNow, enable, speak, reset, enqueue, finish, stop, duck, restore, resume }
 }

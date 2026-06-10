@@ -11,7 +11,7 @@ from fastapi.staticfiles import StaticFiles
 
 from .config import settings
 from .interaction.presenter import presenter
-from .routes import control, conversation, demo, sessions, tts
+from .routes import control, conversation, demo, sessions, tools, tts
 from .session_store import session_store
 from .tts_stream import handle_tts_stream
 from .ws_manager import ws_manager
@@ -37,6 +37,7 @@ app.include_router(control.router)
 app.include_router(conversation.router)
 app.include_router(sessions.router)
 app.include_router(tts.router)
+app.include_router(tools.router)
 
 
 @app.get("/api/health")

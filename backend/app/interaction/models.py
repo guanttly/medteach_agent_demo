@@ -74,6 +74,7 @@ class JobStatus(str, Enum):
 class TurnRoute(str, Enum):
     IMMEDIATE_ACK = "immediate_ack"
     CONTEXT_QUESTION = "context_question"
+    BUSINESS_QUERY = "business_query"
     START_JOB = "start_job"
     CONFIRM = "confirm"
     PUBLISH = "publish"

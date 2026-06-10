@@ -78,6 +78,27 @@ class Settings:
     LLM_CHAT_MAX_TOKENS: int = int(os.getenv("LLM_CHAT_MAX_TOKENS", "300"))
     # 语音交互关键路径的外部 LLM 预算。超出即使用确定性话术，避免用户等模型。
     VOICE_LLM_BUDGET_SECONDS: float = float(os.getenv("VOICE_LLM_BUDGET_SECONDS", "0.35"))
+
+    # ---- 智能体编排引擎（让「意图→调真实工具→总结」真正由智能体驱动）----
+    # deepseek = DeepSeek 直连编排（意图 LLM + 真实工具 + LLM 总结，秒级，最流畅）
+    # claude   = 关键问答交给 Claude Code CLI 自主调真实工具（MCP），最贴合「交给 Claude」，但有 5~30s 延迟
+    # hybrid   = 常规语音问答走 DeepSeek 快路径保流畅，复杂/显式任务可切 Claude 自主编排（默认）
+    AGENT_ENGINE: str = os.getenv("AGENT_ENGINE", "hybrid").strip().lower()
+    # 语音意图识别是否用 LLM 语义理解（正则始终作为零延迟优先 + 兜底）
+    VOICE_INTENT_LLM: bool = os.getenv("VOICE_INTENT_LLM", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+    # 业务回答是否用 LLM 基于真实数据自然改写（确定性模板始终作为事实基线 + 兜底）
+    VOICE_SUMMARY_LLM: bool = os.getenv("VOICE_SUMMARY_LLM", "true").strip().lower() not in (
+        "0", "false", "no", "off",
+    )
+    # 意图识别的 LLM 预算（秒）：超时回退正则路由，避免语音卡顿
+    VOICE_INTENT_LLM_BUDGET: float = float(os.getenv("VOICE_INTENT_LLM_BUDGET", "1.5"))
+    # 业务总结的 LLM 预算（秒）：超时回退确定性模板话术
+    VOICE_SUMMARY_LLM_BUDGET: float = float(os.getenv("VOICE_SUMMARY_LLM_BUDGET", "3.0"))
+    # Claude Code 自主调工具（agentic）超时（秒）
+    CLAUDE_AGENTIC_TIMEOUT: int = int(os.getenv("CLAUDE_AGENTIC_TIMEOUT", "45"))
+
     # 前台占用保护窗口（秒）：用户刚说话/打断后的这段时间内，后台「过程类」主动播报
     # （进度安抚 / heartbeat）主动让路，不抢占语音交互通道。语音交互即 UI，必须始终优先。
     FOREGROUND_HOLD_SECONDS: float = float(os.getenv("FOREGROUND_HOLD_SECONDS", "6"))
@@ -137,6 +158,25 @@ class Settings:
     def chat_llm_configured(self) -> bool:
         """对话层（flash 直连 DeepSeek）是否可用：取决于是否填了 DeepSeek Key。"""
         return self.LLM_ENABLED and bool(self.DEEPSEEK_API_KEY)
+
+    @property
+    def voice_intent_llm_enabled(self) -> bool:
+        """语音意图是否用 LLM 语义识别（需开关开启且 DeepSeek 可用）。"""
+        return self.VOICE_INTENT_LLM and self.chat_llm_configured
+
+    @property
+    def voice_summary_llm_enabled(self) -> bool:
+        """业务回答是否用 LLM 自然改写（需开关开启且 DeepSeek 可用）。"""
+        return self.VOICE_SUMMARY_LLM and self.chat_llm_configured
+
+    @property
+    def claude_agentic_enabled(self) -> bool:
+        """是否启用 Claude Code 自主调真实工具通道（agentic）。"""
+        return (
+            self.AGENT_ENGINE in ("claude", "hybrid")
+            and self.LLM_ENABLED
+            and bool(self.DEEPSEEK_API_KEY)
+        )
 
     @property
     def llm_configured(self) -> bool:

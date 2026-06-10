@@ -1,0 +1,11 @@
+{
+  "tools": [
+    {
+      "name": "recommend_cases",
+      "script": "tools/recommend_cases.py",
+      "desc": "根据薄弱点/下一阶段目标推荐复训典型病例",
+      "args": [],
+      "returns": "{ next_goal, cases[] }"
+    }
+  ]
+}

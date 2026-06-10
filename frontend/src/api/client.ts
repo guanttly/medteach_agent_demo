@@ -67,7 +67,21 @@ export const api = {
     fetch(`/api/demo/state?session_id=${session_id}`).then((r) => r.json()),
   getJobs: (session_id = SESSION_ID) =>
     fetch(`/api/sessions/${session_id}/jobs`).then((r) => r.json()),
-  ttsConfig: () => fetch('/api/tts/config').then((r) => r.json())
+  ttsConfig: () => fetch('/api/tts/config').then((r) => r.json()),
+  // 工具验证页：列出已接入的真实工具箱 + 平台状态；直接调用某工具测试真实教学平台。
+  getTools: () => fetch('/api/tools').then((r) => r.json()),
+  invokeTool: (
+    key: string,
+    params: Record<string, unknown> | null = null,
+    mode: string | null = null,
+    session_id = SESSION_ID
+  ) => post('/api/tools/invoke', { session_id, key, params, mode }),
+  // 演示前一键预热只读模块（回填缓存，现场命中即秒开真数据）。
+  prewarmTools: (modules: string[] | null = null, session_id = SESSION_ID) =>
+    post('/api/tools/prewarm', { session_id, modules }),
+  // 一键端到端跑通一个组合演示场景（多工具链）。
+  runScenario: (key: string, mode: string | null = null, session_id = SESSION_ID) =>
+    post('/api/tools/scenario', { session_id, key, mode })
 }
 
 export type TtsResult =

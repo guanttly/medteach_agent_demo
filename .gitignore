@@ -3,6 +3,9 @@
 **/.env
 !**/.env.example
 
+# ===== Claude MCP 运行时配置（含平台凭据，运行时生成）=====
+**/.mcp.json
+
 # ===== Python =====
 __pycache__/
 *.pyc

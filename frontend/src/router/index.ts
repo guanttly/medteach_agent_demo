@@ -7,6 +7,7 @@ export const router = createRouter({
     { path: '/home', name: 'home', component: () => import('../pages/Home.vue') },
     { path: '/screen', name: 'screen', component: () => import('../pages/BigScreen.vue') },
     { path: '/avatar', name: 'avatar', component: () => import('../pages/Avatar.vue') },
-    { path: '/control', name: 'control', component: () => import('../pages/Control.vue') }
+    { path: '/control', name: 'control', component: () => import('../pages/Control.vue') },
+    { path: '/tools', name: 'tools', component: () => import('../pages/Tools.vue') }
   ]
 })

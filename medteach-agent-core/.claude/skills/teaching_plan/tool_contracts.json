@@ -1,0 +1,11 @@
+{
+  "tools": [
+    {
+      "name": "list_teaching_plans",
+      "script": "tools/list_teaching_plans.py",
+      "desc": "查询教学计划/教学阅片安排列表（主题、讲师、时间、状态等）",
+      "args": ["page?", "size?"],
+      "returns": "{ total, plans[] }"
+    }
+  ]
+}

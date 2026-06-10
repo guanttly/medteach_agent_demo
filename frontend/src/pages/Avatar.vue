@@ -21,6 +21,10 @@ let routeTimer = 0
 let pendingTranscript = ''
 let asrCandidateTranscript = ''
 let asrCandidateUpdatedAt = 0
+// 本 recognition session 内累积的全部 final 文本，及已经路由发送出去的前缀长度。
+// Chrome 会把一句话拆成多个 final 段，靠这两个游标把「当前句」完整切出来，避免二次校准截断后半句。
+let asrSessionFinal = ''
+let asrSentFinalLen = 0
 let asrRouteTimer = 0
 let pendingAsrTranscript = ''
 let pendingAsrSource: 'final' | 'vad' | 'speechend' | 'end' | '' = ''
@@ -53,6 +57,9 @@ const VOICE_ROUTE_IDLE_FLUSH_MS = 80
 const ASR_CANDIDATE_STALE_MS = 5000
 const ASR_FINAL_SETTLE_MS = 220
 const ASR_ENDPOINT_SETTLE_MS = 760
+// 普通陈述句：Chrome 连续说话时会拆成多个 final 段，段间可能间隔较久；等久一点让整句合并，
+// 避免「二次校准把前半句提前发送、后半句被截断」。端点(speechend/vad 静默)会更早切句。
+const ASR_SENTENCE_SETTLE_MS = 900
 const ASR_SHORT_FRAGMENT_SETTLE_MS = 1400
 const ASR_MIN_STABLE_CHARS = 3
 const VAD_MIN_SPEECH_MS = 180
@@ -135,7 +142,8 @@ function start() {
 watch(
   () => store._ttsId,
   () => {
-    if (!started.value || document.visibilityState !== 'visible') {
+    // 数字人是唯一音频通道：即便本页切到后台也要继续播报，不能因不可见而丢弃语音。
+    if (!started.value) {
       processedTtsId = store._ttsId
       return
     }
@@ -226,7 +234,7 @@ function asrRouteDelay(text: string, source: 'final' | 'vad' | 'speechend' | 'en
   const len = normalizeZh(text).length
   if (isControlIntent(text)) return source === 'final' ? VOICE_ROUTE_IDLE_FLUSH_MS : ASR_FINAL_SETTLE_MS
   if (len < ASR_MIN_STABLE_CHARS) return ASR_SHORT_FRAGMENT_SETTLE_MS
-  return source === 'final' ? ASR_FINAL_SETTLE_MS : ASR_ENDPOINT_SETTLE_MS
+  return source === 'final' ? ASR_SENTENCE_SETTLE_MS : ASR_ENDPOINT_SETTLE_MS
 }
 function betterAsrCandidate(current: string, pending: string): boolean {
   const c = normalizeZh(current)
@@ -266,6 +274,7 @@ function flushPendingAsrRoute() {
     Date.now() - lastVadRoutedAt < VAD_DUPLICATE_SUPPRESS_MS &&
     isNearDuplicateText(t, lastVadRoutedTranscript)
   ) {
+    if (source === 'final') asrSentFinalLen = Math.max(asrSentFinalLen, asrSessionFinal.length)
     clearAsrCandidate()
     return
   }
@@ -283,6 +292,7 @@ function flushPendingAsrRoute() {
     lastVadRoutedAt = Date.now()
   }
   routeVoiceNow(t)
+  if (source === 'final') asrSentFinalLen = Math.max(asrSentFinalLen, asrSessionFinal.length)
   clearAsrCandidate()
 }
 function routeAsrText(text: string, source: 'final' | 'vad' | 'speechend' | 'end') {
@@ -310,7 +320,7 @@ function scheduleDuckRestore() {
   duckRestoreTimer = window.setTimeout(() => {
     duckRestoreTimer = 0
     if (tts.speakingNow.value) tts.restore()
-  }, 1500)
+  }, 800)
 }
 function cancelDuckRestore() {
   if (duckRestoreTimer) {
@@ -420,24 +430,28 @@ function setupRecognition() {
   recognition.onresult = (e: any) => {
     lastAsrSignalAt = Date.now()
     recognitionAlive = true
-    let finalText = ''
+    // 遍历整个结果列表累积本 session 的全部 final 段（Chrome 把一句话拆多段），
+    // 再按已发送前缀切出「当前句」，从根上消除二次校准把后半句截断的问题。
+    let sessionFinal = ''
     let interim = ''
-    for (let i = e.resultIndex; i < e.results.length; i++) {
+    for (let i = 0; i < e.results.length; i++) {
       const result = e.results[i]
       const piece = result[0]?.transcript ?? ''
-      if (result.isFinal) finalText += piece
+      if (result.isFinal) sessionFinal += piece
       else interim += piece
     }
+    if (asrSentFinalLen > sessionFinal.length) asrSentFinalLen = 0 // session 重启/回退保护
+    asrSessionFinal = sessionFinal
+    const unsentFinal = sessionFinal.slice(asrSentFinalLen)
+    const liveFull = (unsentFinal + interim).trim()
     // 鲨鲨播报期间的 interim 多为回声，不显示草稿（真插话由 flushVoiceRoute 回声判定处理）
     if (!tts.speakingNow.value) {
-      const transcript = (finalText + interim).trim()
-      store.setLiveTranscript(transcript)
-      if (transcript) store.beginListening()
+      store.setLiveTranscript(liveFull)
+      if (liveFull) store.beginListening()
     }
-    const candidate = (finalText + interim).trim()
-    if (candidate) rememberAsrCandidate(candidate)
-    const text = finalText.trim()
-    if (text) routeAsrText(text, 'final')
+    if (liveFull) rememberAsrCandidate(liveFull)
+    const finalNow = unsentFinal.trim()
+    if (finalNow) routeAsrText(finalNow, 'final')
   }
   recognition.onspeechstart = () => {
     lastAsrSignalAt = Date.now()
@@ -644,6 +658,9 @@ function startRecognition() {
   if (!recognition || !shouldListen) return
   void startVad()
   recognitionAlive = false
+  // 新一轮识别会话：Chrome 的 results 从头开始，重置累积游标避免错位。
+  asrSessionFinal = ''
+  asrSentFinalLen = 0
   try {
     recognition.start()
     listening.value = true
@@ -683,6 +700,8 @@ function stopRecognition() {
   clearPendingAsrRoute()
   pendingTranscript = ''
   clearAsrCandidate()
+  asrSessionFinal = ''
+  asrSentFinalLen = 0
   lastRoutedTranscript = ''
   lastRoutedAt = 0
   lastVadRoutedTranscript = ''
@@ -709,8 +728,9 @@ function toggleMic() {
 }
 
 function handleVisibilityChange() {
-  if (document.visibilityState === 'hidden') {
-    tts.stop()
+  // 数字人是唯一音频通道：切到后台不应静音；回到前台时唤醒可能被浏览器挂起的音频上下文。
+  if (document.visibilityState === 'visible') {
+    tts.resume()
   }
 }
 

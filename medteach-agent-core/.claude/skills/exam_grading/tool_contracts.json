@@ -1,0 +1,11 @@
+{
+  "tools": [
+    {
+      "name": "get_exam_result",
+      "script": "tools/get_exam_result.py",
+      "desc": "获取某场考试的阅卷结果、分数分布与薄弱点（默认最近一场已结束考试）",
+      "args": [],
+      "returns": "{ exam_id, exam_name, summary, score_distribution[], students[], weak_points[] }"
+    }
+  ]
+}

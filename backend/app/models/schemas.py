@@ -64,6 +64,30 @@ class ModeRequest(BaseModel):
     mode: str  # mock | real | hybrid
 
 
+class ToolInvokeRequest(BaseModel):
+    """工具验证页：直接调用某个平台工具。"""
+
+    session_id: str = "demo_001"
+    key: str
+    params: dict | None = None
+    mode: str | None = None  # mock | real | hybrid；留空用当前模式
+
+
+class PrewarmRequest(BaseModel):
+    """工具验证页：演示前一键预热只读模块（回填缓存）。"""
+
+    session_id: str = "demo_001"
+    modules: list[str] | None = None  # 留空预热全部只读模块
+
+
+class ScenarioRunRequest(BaseModel):
+    """工具验证页：一键端到端跑通一个组合演示场景。"""
+
+    session_id: str = "demo_001"
+    key: str
+    mode: str | None = None  # mock | real | hybrid；留空用当前模式
+
+
 class PresetRequest(BaseModel):
     session_id: str = "demo_001"
     preset: str  # arrange | confirm_plan | publish | simulate_submit

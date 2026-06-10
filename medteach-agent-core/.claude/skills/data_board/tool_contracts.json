@@ -1,0 +1,11 @@
+{
+  "tools": [
+    {
+      "name": "get_data_board",
+      "script": "tools/get_data_board.py",
+      "desc": "查询教学/考试综合数据看板（考试数、试卷数、题量、平均分、难度/题型分布、教学场次等）",
+      "args": [],
+      "returns": "data_board { exam{...}, edu{...} }"
+    }
+  ]
+}
