@@ -82,6 +82,7 @@ class TurnRoute(str, Enum):
     MODIFY = "modify"
     SMALLTALK = "smalltalk"
     RESET = "reset"
+    AUTHORIZE = "authorize"
 
 
 class NarrationKind(str, Enum):

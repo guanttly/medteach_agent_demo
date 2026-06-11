@@ -44,6 +44,11 @@ def _new_conversation() -> dict[str, Any]:
         "last_answer_topic": None,
         "last_assistant_utterance": "",
         "last_interaction_at": 0.0,
+        # 语音授权：本场已授予的授权范围（如 "platform_data"），授予后本场不再重复询问。
+        "granted_authorizations": [],
+        # 待授权请求：等待用户口头同意/拒绝时挂起的动作上下文（None=无）。
+        # 结构：{"scope", "reason", "resume", "original_text", "bypass"}
+        "pending_authorization": None,
     }
 
 

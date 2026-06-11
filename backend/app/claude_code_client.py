@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -199,11 +200,18 @@ class ClaudeCodeClient:
         return path
 
     async def run_agentic_query(
-        self, user_text: str, *, mode: str | None = None
+        self, user_text: str, *, mode: str | None = None, bypass: bool = False
     ) -> dict[str, Any]:
         """Claude 自主选 MCP 工具 + 调真实工具箱 + 总结。
 
-        返回 {assistant_text, tool, fallback}。任何失败向上抛，由网关回退 DeepSeek 快路径。
+        返回结构（韧性解析，尽量不丢可朗读的答案）：
+        ``{assistant_text, tool, fallback, ok, needs_authorization, denied_tools, error}``
+
+        - ``bypass=True``：获语音授权后的重试，附 ``--permission-mode bypassPermissions`` 放行
+          被拦截的工具/权限。
+        - ``needs_authorization=True``：Claude 报告了 permission_denials（有工具被权限拦截），
+          上层据此发起「语音授权」交互；授权后用 ``bypass=True`` 重试。
+        - 子进程超时 / 非零退出 / 空输出：抛异常，由网关回退 DeepSeek 快路径（三层兜底）。
         """
         mcp_config = self._ensure_mcp_config(mode)
         allowed = ",".join(f"mcp__medteach__{t}" for t in _MCP_TOOLS)
@@ -212,9 +220,14 @@ class ClaudeCodeClient:
             "--output-format", "json",
             "--max-turns", "6",
             "--mcp-config", str(mcp_config),
+            "--strict-mcp-config",          # 仅用本配置的 MCP server，避免串入用户/项目级配置
             "--allowedTools", allowed,
             "--append-system-prompt", _AGENTIC_SYSTEM_PROMPT,
         ]
+        # 授权后的重试：放行被权限拦截的工具/操作（仅本次调用，演示工具均只读，安全）。
+        permission_mode = "bypassPermissions" if bypass else settings.CLAUDE_PERMISSION_MODE
+        if permission_mode:
+            cmd += ["--permission-mode", permission_mode]
         proc = await asyncio.create_subprocess_exec(
             *cmd,
             cwd=str(self.core_dir),
@@ -234,12 +247,84 @@ class ClaudeCodeClient:
                 f"claude 退出码 {proc.returncode}: {stderr.decode(errors='ignore')[:400]}"
             )
         raw = stdout.decode(errors="ignore").strip()
+        if not raw:
+            raise RuntimeError("claude 无输出")
+        return self._parse_agentic_result(raw)
+
+    @staticmethod
+    def _parse_agentic_result(raw: str) -> dict[str, Any]:
+        """韧性解析 claude --output-format json 的输出。
+
+        即使模型没有严格输出我们要求的 JSON，也尽量从 result 文本里抢救出可朗读的答案，
+        避免「Claude 其实答得很好，却因 JSON 解析失败被整段丢弃」这一偶发失败。
+        """
+        result_text = raw
+        denied_tools: list[str] = []
+        envelope_error: str | None = None
         try:
             outer = json.loads(raw)
-            result_text = outer.get("result", raw) if isinstance(outer, dict) else raw
         except json.JSONDecodeError:
-            result_text = raw
-        return self._extract_json(result_text)
+            outer = None
+        if isinstance(outer, dict):
+            result_text = outer.get("result") or raw
+            # permission_denials：被权限拦截的工具（需要授权才能用）。
+            for d in outer.get("permission_denials") or []:
+                name = d.get("tool_name") or d.get("tool") if isinstance(d, dict) else None
+                if name:
+                    denied_tools.append(str(name))
+            if outer.get("is_error"):
+                envelope_error = str(outer.get("subtype") or outer.get("error") or "claude_error")
+
+        # 先按约定的 JSON 答案解析；失败则把 result 文本本身当作可朗读答案抢救。
+        assistant_text = ""
+        tool = ""
+        fallback = True
+        parsed_json = True
+        try:
+            data = ClaudeCodeClient._extract_json(result_text)
+            assistant_text = str(data.get("assistant_text") or "").strip()
+            tool = str(data.get("tool") or "").strip()
+            fallback = bool(data.get("fallback", True))
+        except (json.JSONDecodeError, AttributeError, TypeError):
+            parsed_json = False
+        if not assistant_text:
+            assistant_text = ClaudeCodeClient._clean_spoken_text(result_text)
+            if parsed_json:
+                # 解析出 JSON 但 assistant_text 为空 —— 仍尝试用 result 文本兜底
+                fallback = True
+
+        needs_authorization = bool(denied_tools)
+        ok = bool(assistant_text) and not needs_authorization
+        return {
+            "assistant_text": assistant_text,
+            "tool": tool,
+            "fallback": fallback,
+            "ok": ok,
+            "needs_authorization": needs_authorization,
+            "denied_tools": denied_tools,
+            "error": envelope_error,
+        }
+
+    @staticmethod
+    def _clean_spoken_text(text: str) -> str:
+        """把模型的自由文本清洗成适合朗读的纯文本（去 Markdown 代码块/JSON 残留）。"""
+        t = (text or "").strip()
+        if not t:
+            return ""
+        if t.startswith("```"):
+            t = t.strip("`")
+            if t[:4].lower() == "json":
+                t = t[4:]
+            t = t.strip()
+        # 若整体仍是一段 JSON（解析失败时），尽量抽出 assistant_text 字段值
+        if t.startswith("{") and "assistant_text" in t:
+            m = re.search(r'"assistant_text"\s*:\s*"((?:[^"\\]|\\.)*)"', t)
+            if m:
+                try:
+                    return json.loads(f'"{m.group(1)}"')
+                except json.JSONDecodeError:
+                    return m.group(1)
+        return t
 
 
 claude_client = ClaudeCodeClient()

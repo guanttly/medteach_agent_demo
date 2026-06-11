@@ -618,8 +618,10 @@ function enqueue(text: string) {
   const useStream = provider !== 'browser'
   for (const p of parts) {
     if (useStream) {
+      console.log('[TTS] Enqueue sentence for streaming:', p)
       sendSynthesize(p)
     } else {
+      console.log('[TTS] Enqueue sentence for browser TTS:', p)
       browserQueue.push(p)
       ensureBrowserPump()
     }

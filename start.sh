@@ -3,12 +3,20 @@
 set -e
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
-echo "[start] 1/3 构建前端静态资源 ..."
+echo "[start] 1/3 清理并构建前端静态资源 ..."
 cd "$ROOT/frontend"
 if [ ! -d "node_modules" ]; then
   npm install
 fi
+rm -rf "$ROOT/frontend/dist" "$ROOT/frontend/node_modules/.vite"
 npm run build
+BUILD_TIME="$(date '+%Y-%m-%d %H:%M:%S %z')"
+GIT_SHA="$(git -C "$ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+{
+  echo "build_time=$BUILD_TIME"
+  echo "git_sha=$GIT_SHA"
+} > "$ROOT/frontend/dist/build-info.txt"
+echo "[start] 前端已重新打包：$BUILD_TIME ($GIT_SHA)"
 
 echo "[start] 2/3 准备后端环境 ..."
 cd "$ROOT/backend"

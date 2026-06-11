@@ -86,6 +86,24 @@ _AGENTIC_HINT_RE = re.compile(
     "为什么|哪些|多少|情况|表现|进度|排课|计划|推荐"
 )
 
+# 语音授权（把「文字/配置授权」搬到自然语音交互）：授权范围标识。
+_AUTH_SCOPE_PLATFORM = "platform_data"
+# 授权意图识别（自然口头同意 / 拒绝）：先判否定，再判肯定，避免「不同意」被误判为同意。
+_AUTH_GRANT_RE = re.compile(
+    r"授权|授予|同意|允许|准许|批准|可以|好的?|行的?|没问题|没毛病|当然|去吧|查吧|开始吧?|放心"
+)
+_AUTH_DENY_RE = re.compile(
+    r"不授?权|不同意|不允许|不准许?|不行|不可以?|不要|不想|不必|不需要|没必要|"
+    r"拒绝|算了|先不|暂时不|不用了?|别|停一?下|取消"
+)
+
+# CC 执行失败后的「优雅回归」话术：先委婉汇报没成功，再自然转折回到初始引导，
+# 而不是生硬地跳回开场白。对应任务「带自然转折的回归」。
+_GRACEFUL_RECOVERY_LINES = (
+    "不好意思，这个问题我刚才没能查出结果，先不耽误您。"
+    "要不我先帮您安排一场胸部 CT 基础诊断考试？您也可以直接问我考试、学员或成绩的情况。"
+)
+
 
 class ConversationGateway:
     # ------------------------------------------------------------------ #
@@ -152,6 +170,8 @@ class ConversationGateway:
             await self._route_reset(s, turn)
         elif route in (TurnRoute.CANCEL,):
             await self._route_cancel(s, turn, pause=False)
+        elif route == TurnRoute.AUTHORIZE:
+            await self._route_authorize(s, turn, text)
         elif route == TurnRoute.MODIFY:
             await self._route_modify(s, turn, text)
         elif route == TurnRoute.CONTEXT_QUESTION:
@@ -394,21 +414,27 @@ class ConversationGateway:
         Claude 失败/超时 → 回退 DeepSeek 改写 → 回退确定性事实。
         """
         if settings.AGENT_ENGINE == "claude" and settings.claude_agentic_enabled:
-            agentic = await self._agentic_business_answer(turn.text)
+            agentic = await self._agentic_business_answer(s, turn.text)
             if agentic:
                 s.conversation["last_answer_engine"] = "claude_agentic"
                 return agentic
         s.conversation["last_answer_engine"] = "deepseek_refine"
         return await self._refine_business_answer(s, turn.text, facts)
 
-    async def _agentic_business_answer(self, user_text: str) -> str | None:
-        """交给 Claude：自主选 MCP 工具、调真实工具箱、口语化总结。失败/超时返回 None。"""
+    async def _agentic_business_answer(self, s: "Session", user_text: str) -> str | None:
+        """交给 Claude：自主选 MCP 工具、调真实工具箱、口语化总结。失败/超时返回 None。
+
+        语音授权开启且本场尚未授权时跳过 CC（回退 DeepSeek/facts），不在业务取数中途打断用户；
+        授权链路统一由开放问答（_route_agentic_smalltalk）发起，授权通过后此处自动启用。
+        """
+        if settings.claude_voice_auth_enabled and not self._is_authorized(s):
+            return None
         try:
             result = await claude_client.run_agentic_query(user_text)
         except Exception as exc:  # noqa: BLE001 - 任何异常都回退快路径，保证展厅不翻车
             logger.warning("claude agentic business answer failed: %s", exc)
             return None
-        text = (result or {}).get("assistant_text")
+        text = (result or {}).get("assistant_text") if isinstance(result, dict) else None
         return text.strip() if isinstance(text, str) and text.strip() else None
 
     async def _route_arrange(self, s: "Session", turn: Turn) -> None:
@@ -525,10 +551,13 @@ class ConversationGateway:
     async def _route_smalltalk(self, s: "Session", turn: Turn, text: str) -> None:
         # 复杂/疑似业务问题：交给 Claude Code 自主选 MCP 工具、调真实工具箱、组织答案（CC 底色）。
         # 命中固定 skill 的标准查询不会落到这里（已被 BUSINESS_QUERY 处理），简单查询仍走快路径秒回。
+        attempted = False
         if settings.claude_agentic_enabled and self._looks_agentic(text):
+            attempted = True
             if await self._route_agentic_smalltalk(s, turn, text):
                 return
         if settings.chat_llm_configured:
+            attempted = True
             from ..agent_brain import agent_brain
             from .. import mock_data
 
@@ -547,20 +576,36 @@ class ConversationGateway:
                 return
         # 兜底
         s.record_first_response(turn)
-        await speaker.say(
-            s,
-            "我是巨鲨数字助教鲨鲨，可以帮您安排一场胸部 CT 基础考试。您可以说「安排一场胸部 CT 基础考试」。",
-            priority=Priority.NORMAL.value, turn_id=turn.turn_id, source="smalltalk",
-        )
+        if attempted:
+            # 真的尝试回答却没成功：委婉汇报失败，再自然转折回到初始引导（而非生硬跳回开场白）。
+            await speaker.say(
+                s, _GRACEFUL_RECOVERY_LINES,
+                priority=Priority.NORMAL.value, turn_id=turn.turn_id, source="smalltalk",
+            )
+        else:
+            await speaker.say(
+                s,
+                "我是巨鲨数字助教鲨鲨，可以帮您安排一场胸部 CT 基础考试。您可以说「安排一场胸部 CT 基础考试」。",
+                priority=Priority.NORMAL.value, turn_id=turn.turn_id, source="smalltalk",
+            )
         await self._restore_idle_shark(s)
 
     async def _route_agentic_smalltalk(self, s: "Session", turn: Turn, text: str) -> bool:
         """把复杂/开放问题交给 Claude Code 自主编排（选工具→调真实工具箱→口语化总结）。
 
+        语音授权门禁（开启时）：本场首次让 CC 访问真实平台数据，先口头征得授权 → 返回 True（已接住）。
         立即安抚保持语音沟通 → CC 自主执行（带心跳安抚）→ 完成后主动汇报。
         CC 失败/超时/空结果返回 False，由调用方回退 DeepSeek flash 聊天，三层兜底永不翻车。
         """
         s.record_first_response(turn)
+        # 语音授权：本场首次让 CC 访问真实平台数据，先口头征得用户授权（把文字授权搬到语音）。
+        if settings.claude_voice_auth_enabled and not self._is_authorized(s):
+            await self._request_authorization(
+                s, turn, scope=_AUTH_SCOPE_PLATFORM,
+                reason="这个问题我需要去访问咱们真实教学平台的数据",
+                resume={"kind": "agentic_smalltalk", "text": text, "bypass": False},
+            )
+            return True
         logger.info("route=smalltalk delegate=claude_agentic text=%r", text[:40])
         await presenter.set_shark(s, SharkState.WORKING, "正在分析…")
         # 立即安抚：复杂任务通常较慢，先接住用户、保持沟通，不让其干等。
@@ -569,9 +614,33 @@ class ConversationGateway:
             priority=Priority.NORMAL.value, turn_id=turn.turn_id,
             source="reassure", shark_state=SharkState.WORKING,
         )
-        answer = await self._await_with_reassurance(s, turn, self._safe_agentic_query(text))
-        if not answer:
+        return await self._run_agentic_and_report(s, turn, text, bypass=False)
+
+    async def _run_agentic_and_report(
+        self, s: "Session", turn: Turn, text: str, *, bypass: bool = False
+    ) -> bool:
+        """执行 CC 自主工具通道并汇报结果。
+
+        返回 True 表示本轮已接住（已汇报 / 已发起授权请求）；False 表示 CC 硬失败，
+        交由调用方回退 DeepSeek flash 聊天或优雅回归。
+        """
+        result = await self._await_with_reassurance(
+            s, turn, self._safe_agentic_query(text, bypass=bypass)
+        )
+        if not result:
             logger.info("claude agentic empty/failed; fallback to flash smalltalk")
+            return False
+        # CC 报告有工具被权限拦截：发起语音授权，拿到授权后 bypass 重试（仅当本次未 bypass）。
+        if result.get("needs_authorization") and not bypass:
+            logger.info("claude agentic needs authorization: %s", result.get("denied_tools"))
+            await self._request_authorization(
+                s, turn, scope=_AUTH_SCOPE_PLATFORM,
+                reason="我刚去调取平台数据时被挡了一下，需要您授权我才能继续",
+                resume={"kind": "agentic_smalltalk", "text": text, "bypass": True},
+            )
+            return True
+        answer = (result.get("assistant_text") or "").strip()
+        if not answer:
             return False
         await speaker.say(
             s, answer, priority=Priority.HIGH.value, turn_id=turn.turn_id,
@@ -580,18 +649,111 @@ class ConversationGateway:
         await self._restore_idle_shark(s)
         return True
 
-    async def _safe_agentic_query(self, text: str) -> str | None:
-        """调用 Claude Code 自主工具通道（永不抛）：失败/超时/空结果返回 None。"""
+    async def _safe_agentic_query(self, text: str, *, bypass: bool = False) -> dict | None:
+        """调用 Claude Code 自主工具通道（永不抛）：失败/超时返回 None，否则返回结构化结果。"""
         try:
             result = await asyncio.wait_for(
-                claude_client.run_agentic_query(text),
+                claude_client.run_agentic_query(text, bypass=bypass),
                 timeout=settings.CLAUDE_AGENTIC_TIMEOUT + 8,
             )
         except Exception as exc:  # noqa: BLE001
             logger.warning("claude agentic query failed: %s", exc)
             return None
-        txt = (result or {}).get("assistant_text") if isinstance(result, dict) else None
-        return txt.strip() if isinstance(txt, str) and txt.strip() else None
+        return result if isinstance(result, dict) else None
+
+    # ------------------------------------------------------------------ #
+    # 语音授权（把「文字/配置授权」搬到自然语音交互）
+    # ------------------------------------------------------------------ #
+    def _is_authorized(self, s: "Session", scope: str = _AUTH_SCOPE_PLATFORM) -> bool:
+        return scope in (s.conversation.get("granted_authorizations") or [])
+
+    @staticmethod
+    def _authorization_decision(text: str) -> str:
+        """识别口头授权意图：grant（同意）/ deny（拒绝）/ unclear（不明确）。先判否定再判肯定。"""
+        t = (text or "").strip()
+        if not t:
+            return "unclear"
+        if _AUTH_DENY_RE.search(t):
+            return "deny"
+        if _AUTH_GRANT_RE.search(t):
+            return "grant"
+        return "unclear"
+
+    async def _request_authorization(
+        self, s: "Session", turn: Turn, *, scope: str, reason: str, resume: dict
+    ) -> None:
+        """挂起待授权请求并用语音向用户征求授权（自然口头交互，等用户答复）。"""
+        s.conversation["pending_authorization"] = {
+            "scope": scope, "reason": reason, "resume": resume, "asked": 0,
+        }
+        s.conversation["last_user_intent"] = TurnRoute.AUTHORIZE.value
+        await speaker.say(
+            s, f"{reason}，这一步需要您的授权。您同意我现在就去做吗？",
+            priority=Priority.HIGH.value, turn_id=turn.turn_id,
+            source="authorization", shark_state=SharkState.SPEAKING,
+        )
+        await self._restore_idle_shark(s)
+
+    async def _route_authorize(self, s: "Session", turn: Turn, text: str) -> None:
+        """处理用户对授权请求的口头答复：同意 → 授权并继续；拒绝 → 优雅作罢；不明确 → 复问一次。"""
+        pending = dict(s.conversation.get("pending_authorization") or {})
+        s.conversation["pending_authorization"] = None
+        s.record_first_response(turn)
+        decision = self._authorization_decision(text)
+
+        if decision == "deny":
+            await speaker.say(
+                s, "好的，那这次我就不去动平台数据了。要不我先帮您安排一场胸部 CT 基础诊断考试？",
+                priority=Priority.HIGH.value, turn_id=turn.turn_id, source="authorization",
+            )
+            await self._restore_idle_shark(s)
+            return
+
+        if decision == "unclear":
+            asked = int(pending.get("asked", 0))
+            if asked < 1:
+                pending["asked"] = asked + 1
+                s.conversation["pending_authorization"] = pending
+                await speaker.say(
+                    s, "我想跟您确认一下：是否授权我去访问平台数据？您说「授权」或者「不用了」就行。",
+                    priority=Priority.HIGH.value, turn_id=turn.turn_id, source="authorization",
+                )
+            else:
+                await speaker.say(
+                    s, "那这次我先不动平台数据。要不我先帮您安排一场胸部 CT 基础诊断考试？",
+                    priority=Priority.HIGH.value, turn_id=turn.turn_id, source="authorization",
+                )
+            await self._restore_idle_shark(s)
+            return
+
+        # grant：记住本场授权（后续同类请求不再打断），并继续被挂起的动作。
+        scope = pending.get("scope", _AUTH_SCOPE_PLATFORM)
+        grants = s.conversation.setdefault("granted_authorizations", [])
+        if scope not in grants:
+            grants.append(scope)
+        await speaker.say(
+            s, "好的，谢谢您的授权，我这就去查，稍等。",
+            priority=Priority.HIGH.value, turn_id=turn.turn_id,
+            source="authorization", shark_state=SharkState.WORKING,
+        )
+        await self._resume_after_authorization(s, turn, pending)
+
+    async def _resume_after_authorization(self, s: "Session", turn: Turn, pending: dict) -> None:
+        """授权通过后，继续此前被挂起的动作。"""
+        resume = pending.get("resume") or {}
+        if resume.get("kind") == "agentic_smalltalk":
+            ok = await self._run_agentic_and_report(
+                s, turn, resume.get("text", ""), bypass=bool(resume.get("bypass")),
+            )
+            if not ok:
+                # 授权后 CC 仍未成功：委婉汇报并自然回归初始引导。
+                await speaker.say(
+                    s, _GRACEFUL_RECOVERY_LINES,
+                    priority=Priority.NORMAL.value, turn_id=turn.turn_id, source="smalltalk",
+                )
+                await self._restore_idle_shark(s)
+            return
+        await self._restore_idle_shark(s)
 
     def _looks_agentic(self, text: str) -> bool:
         """是否「复杂/疑似业务」问题：值得交给 CC 自主编排（纯寒暄/语气词不劳 CC）。"""
@@ -701,6 +863,9 @@ class ConversationGateway:
     async def _route_intent(self, s: "Session", text: str) -> TurnRoute:
         if re.search(r"重置|重来|重新开始|再来一次", text):
             return TurnRoute.RESET
+        # 语音授权对话进行中：把这一句优先按「授权/拒绝」意图理解，让授权交互自然闭环。
+        if s.conversation.get("pending_authorization"):
+            return TurnRoute.AUTHORIZE
         if re.search(r"停一?下|取消|暂停|停止|先别|不用了|别说了", text):
             return TurnRoute.CANCEL
         # 业务查询：命中关键词直连真实工具箱取数（修复「Real 模式问答仍走模板」）。

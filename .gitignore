@@ -19,6 +19,9 @@ frontend/node_modules/
 frontend/dist/
 *.log
 
+# ===== 一键安装包产物 =====
+/dist/
+
 # ===== 系统 =====
 .DS_Store
 

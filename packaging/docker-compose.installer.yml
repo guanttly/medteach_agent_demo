@@ -1,0 +1,33 @@
+# Runtime compose file embedded in the self-extracting .run installer.
+# The build script replaces __IMAGE_REF__ with the exact image tag packaged.
+services:
+  medteach-demo:
+    image: __IMAGE_REF__
+    container_name: medteach-agent-demo
+    ports:
+      - "${PORT:-8000}:8000"
+    environment:
+      DEMO_MODE: "${DEMO_MODE:-hybrid}"
+      AGENT_ENGINE: "${AGENT_ENGINE:-hybrid}"
+      LLM_ENABLED: "${LLM_ENABLED:-true}"
+      DEEPSEEK_API_KEY: "${DEEPSEEK_API_KEY:-}"
+      DEEPSEEK_BASE_URL: "${DEEPSEEK_BASE_URL:-https://api.deepseek.com}"
+      DEEPSEEK_AGENT_MODEL: "${DEEPSEEK_AGENT_MODEL:-deepseek-v4-pro}"
+      DEEPSEEK_CHAT_MODEL: "${DEEPSEEK_CHAT_MODEL:-deepseek-v4-flash}"
+      CLAUDE_AGENTIC_TIMEOUT: "${CLAUDE_AGENTIC_TIMEOUT:-45}"
+      CLAUDE_PERMISSION_MODE: "${CLAUDE_PERMISSION_MODE:-}"
+      CLAUDE_VOICE_AUTH: "${CLAUDE_VOICE_AUTH:-false}"
+      ALIYUN_NLS_APPKEY: "${ALIYUN_NLS_APPKEY:-}"
+      ALIYUN_NLS_TOKEN: "${ALIYUN_NLS_TOKEN:-}"
+      ALIYUN_AK_ID: "${ALIYUN_AK_ID:-}"
+      ALIYUN_AK_SECRET: "${ALIYUN_AK_SECRET:-}"
+      ALIYUN_NLS_REGION: "${ALIYUN_NLS_REGION:-cn-shanghai}"
+      ALIYUN_NLS_VOICE: "${ALIYUN_NLS_VOICE:-zhixiaobai}"
+      TEACHING_PLATFORM_BASE_URL: "${TEACHING_PLATFORM_BASE_URL:-}"
+      TEACHING_PLATFORM_USERNAME: "${TEACHING_PLATFORM_USERNAME:-}"
+      TEACHING_PLATFORM_PASSWORD: "${TEACHING_PLATFORM_PASSWORD:-}"
+      TEACHING_PLATFORM_PLAT_ID: "${TEACHING_PLATFORM_PLAT_ID:-0}"
+      TEACHING_PLATFORM_VERIFY_SSL: "${TEACHING_PLATFORM_VERIFY_SSL:-false}"
+      TEACHING_PLATFORM_ALLOW_WRITE: "${TEACHING_PLATFORM_ALLOW_WRITE:-false}"
+      HTTPS: "${HTTPS:-0}"
+    restart: unless-stopped

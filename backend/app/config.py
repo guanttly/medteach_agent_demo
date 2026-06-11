@@ -98,6 +98,16 @@ class Settings:
     VOICE_SUMMARY_LLM_BUDGET: float = float(os.getenv("VOICE_SUMMARY_LLM_BUDGET", "3.0"))
     # Claude Code 自主调工具（agentic）超时（秒）
     CLAUDE_AGENTIC_TIMEOUT: int = int(os.getenv("CLAUDE_AGENTIC_TIMEOUT", "45"))
+    # Claude Code 权限模式：headless `-p` 下普通调用留空（依赖 --allowedTools 已足够，
+    # 且 claude 2.x headless 不会卡在权限提示）；获授权后的重试用 bypassPermissions 放行。
+    # 可选值：default / acceptEdits / bypassPermissions（留空=不显式传，用 CLI 默认）。
+    CLAUDE_PERMISSION_MODE: str = os.getenv("CLAUDE_PERMISSION_MODE", "").strip()
+    # 语音授权：开启后，本场首次「Claude 自主访问真实教学平台数据」需先经语音授权
+    # （把原先 TEACHING_PLATFORM_ALLOW_WRITE 这类「文字/配置授权」搬到自然语音交互）。
+    # 默认关闭：常规展厅读类问答零摩擦、不打断流畅度；需要演示授权链路时设 true。
+    CLAUDE_VOICE_AUTH: bool = os.getenv("CLAUDE_VOICE_AUTH", "false").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
     # 前台占用保护窗口（秒）：用户刚说话/打断后的这段时间内，后台「过程类」主动播报
     # （进度安抚 / heartbeat）主动让路，不抢占语音交互通道。语音交互即 UI，必须始终优先。
@@ -177,6 +187,11 @@ class Settings:
             and self.LLM_ENABLED
             and bool(self.DEEPSEEK_API_KEY)
         )
+
+    @property
+    def claude_voice_auth_enabled(self) -> bool:
+        """是否启用「语音授权」链路（需开关开启且 agentic 通道可用）。"""
+        return self.CLAUDE_VOICE_AUTH and self.claude_agentic_enabled
 
     @property
     def llm_configured(self) -> bool:

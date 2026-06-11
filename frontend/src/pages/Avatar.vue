@@ -38,6 +38,8 @@ let lastVadRoutedAt = 0
 let startWatchdog = 0
 let recognitionAlive = false
 let recognitionRestarting = false
+let recognitionPausedForTts = false
+let vadPausedForTts = false
 let lastAsrSignalAt = 0
 let bargeInRecycleTimer = 0
 let processedTtsId = 0
@@ -69,6 +71,11 @@ const VAD_DUPLICATE_SUPPRESS_MS = 8000
 const RECOGNITION_START_WATCHDOG_MS = 2500
 const RECOGNITION_DEAD_SIGNAL_MS = 1800
 const BARGE_IN_RECYCLE_MS = 500
+
+const micMode = new URLSearchParams(window.location.search).get('micMode') ||
+  window.localStorage.getItem('shark_mic_mode') ||
+  'duplex'
+const fullDuplexDuringTts = micMode !== 'half'
 
 const STATE_TEXT: Record<string, string> = {
   idle: '待命中',
@@ -112,7 +119,8 @@ const voiceHint = computed(() => {
 const micStateText = computed(() => {
   if (thinking.value) return '已听到，鲨鲨正在思考…'
   if (tts.speakingNow.value) {
-    return listening.value ? '鲨鲨播报中 · 可随时说话打断' : '鲨鲨播报中'
+    if (!micEnabled.value) return '鲨鲨播报中'
+    return fullDuplexDuringTts ? '鲨鲨播报中 · 可说话打断' : '鲨鲨播报中 · 麦克风稍后继续'
   }
   if (listening.value) return '正在聆听，请说…'
   if (micEnabled.value) return '麦克风已开启，正在准备聆听'
@@ -158,7 +166,12 @@ watch(
   }
 )
 
-// 播报期间保持麦克风开启以支持「说话打断」；用户开口先压低音量给出反馈。
+watch(tts.speakingNow, (v) => {
+  if (v) handleTtsMicStart()
+  else handleTtsMicEnd()
+})
+
+// 播报期间默认保留 SpeechRecognition 以支持插话，但暂停 VAD/getUserMedia 旁路，避免录音流压制页面播报。
 // 字幕 / 音频的「过期丢弃」由 store 依据 generation 统一处理。
 
 // ---- 回声判定：避免把鲨鲨自己的播报当成用户插话 ----
@@ -332,6 +345,8 @@ function cancelDuckRestore() {
 // 主动打断（打断按钮）：本地立即停音 + 通知网关进入新 generation，并保持聆听。
 function bargeIn() {
   cancelDuckRestore()
+  recognitionPausedForTts = false
+  vadPausedForTts = false
   tts.stop()
   store.interrupt({})
   if (!shouldListen) {
@@ -459,8 +474,10 @@ function setupRecognition() {
     // 用户开口：若鲨鲨正在播报，先压低音量给出「我在听」的反馈，
     // 真伪插话在 flushVoiceRoute 里依据回声判定最终决定停不停。
     if (tts.speakingNow.value) {
-      tts.duck()
-      scheduleDuckRestore()
+      if (!fullDuplexDuringTts) {
+        tts.duck()
+        scheduleDuckRestore()
+      }
     } else {
       // 鲨鲨空闲时用户开口：立即进入「聆听」态，让数字人有可见回应
       store.beginListening()
@@ -470,6 +487,10 @@ function setupRecognition() {
     routeAsrCandidate('speechend')
   }
   recognition.onend = () => {
+    if (recognitionPausedForTts) {
+      listening.value = false
+      return
+    }
     routeAsrCandidate('end')
     flushVoiceRoute()
     listening.value = false
@@ -477,6 +498,7 @@ function setupRecognition() {
   }
   recognition.onerror = (event: any) => {
     listening.value = false
+    if (recognitionPausedForTts) return
     if (event?.error === 'not-allowed' || event?.error === 'service-not-allowed') {
       shouldListen = false
       return
@@ -486,6 +508,7 @@ function setupRecognition() {
 }
 
 async function startVad() {
+  if (recognitionPausedForTts || vadPausedForTts || tts.speakingNow.value) return
   if (vadStarting || vadRaf || vadStream) return
   const mediaDevices = navigator.mediaDevices
   if (!mediaDevices?.getUserMedia) return
@@ -498,7 +521,7 @@ async function startVad() {
         autoGainControl: true
       }
     })
-    if (!shouldListen) {
+    if (!shouldListen || recognitionPausedForTts || vadPausedForTts || tts.speakingNow.value) {
       stopVad()
       return
     }
@@ -552,6 +575,10 @@ function stopVad() {
 }
 
 function vadLoop() {
+  if (recognitionPausedForTts || vadPausedForTts || tts.speakingNow.value) {
+    stopVad()
+    return
+  }
   if (!vadAnalyser || !vadData) {
     vadRaf = 0
     return
@@ -620,6 +647,7 @@ function armStartWatchdog() {
 // 打断后识别变僵尸、或 start() 反复抛 InvalidStateError 时调用，确保下一句仍能录入。
 function forceRestartRecognition() {
   if (!shouldListen) return
+  if (recognitionPausedForTts || (tts.speakingNow.value && !fullDuplexDuringTts)) return
   if (recognitionRestarting) return
   recognitionRestarting = true
   clearStartWatchdog()
@@ -648,6 +676,7 @@ function scheduleBargeInRecycle() {
 
 function scheduleRecognitionRestart() {
   if (!recognition || restartTimer) return
+  if (recognitionPausedForTts || (tts.speakingNow.value && !fullDuplexDuringTts)) return
   restartTimer = window.setTimeout(() => {
     restartTimer = 0
     startRecognition()
@@ -656,6 +685,7 @@ function scheduleRecognitionRestart() {
 
 function startRecognition() {
   if (!recognition || !shouldListen) return
+  if (recognitionPausedForTts || (tts.speakingNow.value && !fullDuplexDuringTts)) return
   void startVad()
   recognitionAlive = false
   // 新一轮识别会话：Chrome 的 results 从头开始，重置累积游标避免错位。
@@ -681,6 +711,8 @@ function startRecognition() {
 function stopRecognition() {
   shouldListen = false
   micEnabled.value = false
+  recognitionPausedForTts = false
+  vadPausedForTts = false
   cancelDuckRestore()
   clearStartWatchdog()
   recognitionRestarting = false
@@ -716,6 +748,70 @@ function stopRecognition() {
   listening.value = false
 }
 
+function handleTtsMicStart() {
+  if (!shouldListen || recognitionPausedForTts) return
+  vadPausedForTts = true
+  stopVad()
+  if (fullDuplexDuringTts) {
+    cancelDuckRestore()
+    tts.restore()
+    if (!listening.value && recognition) startRecognition()
+    return
+  }
+  recognitionPausedForTts = true
+  cancelDuckRestore()
+  clearStartWatchdog()
+  recognitionRestarting = false
+  recognitionAlive = false
+  if (restartTimer) {
+    clearTimeout(restartTimer)
+    restartTimer = 0
+  }
+  if (bargeInRecycleTimer) {
+    clearTimeout(bargeInRecycleTimer)
+    bargeInRecycleTimer = 0
+  }
+  if (routeTimer) {
+    clearTimeout(routeTimer)
+    routeTimer = 0
+  }
+  clearPendingAsrRoute()
+  pendingTranscript = ''
+  clearAsrCandidate()
+  asrSessionFinal = ''
+  asrSentFinalLen = 0
+  stopVad()
+  if (recognition) {
+    try {
+      recognition.abort()
+    } catch {
+      /* ignore invalid state */
+    }
+  }
+  listening.value = false
+  tts.restore()
+}
+
+function handleTtsMicEnd() {
+  vadPausedForTts = false
+  if (fullDuplexDuringTts) {
+    cancelDuckRestore()
+    tts.restore()
+    if (shouldListen && micEnabled.value) void startVad()
+    return
+  }
+  if (!recognitionPausedForTts) return
+  recognitionPausedForTts = false
+  cancelDuckRestore()
+  tts.restore()
+  if (!shouldListen || !micEnabled.value) return
+  setupRecognition()
+  restartTimer = window.setTimeout(() => {
+    restartTimer = 0
+    if (shouldListen && !tts.speakingNow.value) startRecognition()
+  }, 250)
+}
+
 function toggleMic() {
   if (!recognition) return
   if (shouldListen) {
@@ -723,7 +819,19 @@ function toggleMic() {
   } else {
     shouldListen = true
     micEnabled.value = true
-    startRecognition()
+    if (tts.speakingNow.value) {
+      if (fullDuplexDuringTts) {
+        vadPausedForTts = true
+        setupRecognition()
+        startRecognition()
+        stopVad()
+        return
+      }
+      recognitionPausedForTts = true
+      stopVad()
+    } else {
+      startRecognition()
+    }
   }
 }
 

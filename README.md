@@ -92,6 +92,39 @@ HTTPS=1 ./dev.sh
   `FORCE=1 ./gen_cert.sh` 重建，或 `EXTRA_SAN="IP:10.0.0.5" ./gen_cert.sh` 追加。
 - 不加 `HTTPS=1` 时一切照旧走 HTTP，本机 `localhost` 演示不受影响。
 
+## 📦 服务器一键安装包（.run）
+
+在开发机/构建机上生成可离线分发的自解压安装包：
+
+```bash
+make release
+```
+
+也可直接调用底层脚本：`./scripts/build-run-package.sh`。
+
+产物位于 `dist/medteach-agent-demo-<version>.run`。上传到服务器后直接执行：
+
+```bash
+bash medteach-agent-demo-<version>.run
+```
+
+安装器会导入包内 Docker 镜像、写入部署目录并启动服务。默认安装目录：root 用户为
+`/opt/medteach-agent-demo`，普通用户为 `~/medteach-agent-demo`；默认端口 `8000`。
+
+常用参数：
+
+```bash
+# 指定安装目录、端口，并启用 HTTPS
+bash medteach-agent-demo-<version>.run --install-dir /opt/medteach-agent-demo --port 18000 --https
+
+# 只安装和导入镜像，不立即启动
+bash medteach-agent-demo-<version>.run --no-start
+```
+
+服务器需已安装并启动 Docker；如存在 `docker compose` 插件或 `docker-compose` 会优先使用，
+否则安装器会退回到 `docker run`。重复执行新版本 `.run` 可升级服务，安装目录中已有 `.env`
+会被保留；业务 Key 可在安装后编辑 `/opt/medteach-agent-demo/.env`，再按安装器输出的管理命令重启。
+
 ## 🔧 配置（阿里云 TTS）
 
 后端首次运行会从 `backend/.env.example` 复制出 `backend/.env`。要启用阿里云语音，填入：
